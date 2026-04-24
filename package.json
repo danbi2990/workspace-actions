@@ -1,0 +1,93 @@
+{
+  "name": "workspace-actions",
+  "displayName": "Workspace Actions",
+  "description": "Send workspace folder paths to the integrated terminal and reveal absolute paths in the VS Code Explorer.",
+  "version": "0.0.2",
+  "publisher": "danbi2990",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danbi2990/workspace-actions.git"
+  },
+  "homepage": "https://github.com/danbi2990/workspace-actions#readme",
+  "bugs": {
+    "url": "https://github.com/danbi2990/workspace-actions/issues"
+  },
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:workspace-actions.addWorkspaceFolder",
+    "onCommand:workspace-actions.addLocalWorktreeFromGitHubUrl",
+    "onCommand:workspace-actions.copyWorkspaceFolderPaths",
+    "onCommand:workspace-actions.refreshStatus"
+  ],
+  "main": "./dist/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "workspace-actions.addWorkspaceFolder",
+        "title": "Workspace Actions: Add Workspace Folder"
+      },
+      {
+        "command": "workspace-actions.addLocalWorktreeFromGitHubUrl",
+        "title": "Workspace Actions: Add Local Worktree from GitHub Issue or PR URL"
+      },
+      {
+        "command": "workspace-actions.copyWorkspaceFolderPaths",
+        "title": "Workspace Actions: Workspace Folder Actions"
+      },
+      {
+        "command": "workspace-actions.refreshStatus",
+        "title": "Workspace Actions: Refresh Status"
+      }
+    ],
+    "configuration": {
+      "title": "Workspace Actions",
+      "properties": {
+        "workspaceActions.baseBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Base branch name used to detect whether the current branch is behind."
+        },
+        "workspaceActions.workspaceFolderRoots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Root folders used when browsing and creating folders to add to the current workspace file."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "workspace-actions.copyWorkspaceFolderPaths",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+ctrl+l"
+      }
+    ]
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "compile": "npm run build",
+    "watch": "tsc -w -p tsconfig.build.json",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "npm run typecheck && npm run build && tsx --test test/**/*.test.ts",
+    "package": "npm run build && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/vscode": "^1.105.0",
+    "@vscode/vsce": "^3.6.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}

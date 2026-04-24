@@ -1,0 +1,10 @@
+.gitignore
+src/**
+test/**
+scripts/**
+tsconfig.json
+tsconfig.build.json
+package-lock.json
+*.vsix
+dist/**/*.map
+resources/icon-source.png
