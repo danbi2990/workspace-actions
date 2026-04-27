@@ -1,8 +1,8 @@
 {
   "name": "workspace-actions",
   "displayName": "Workspace Actions",
-  "description": "Send workspace folder paths to the integrated terminal and reveal absolute paths in the VS Code Explorer.",
-  "version": "0.0.2",
+  "description": "Manage multi-root workspaces, local Git worktrees, and GitHub-linked folders from fast keyboard-driven pickers.",
+  "version": "0.0.3",
   "publisher": "danbi2990",
   "license": "MIT",
   "repository": {
