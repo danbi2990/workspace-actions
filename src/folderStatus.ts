@@ -1,5 +1,9 @@
 import * as path from "node:path";
 import { type FolderUiState, type WorkspaceFolderLike } from "./commands";
+import {
+  isSuccessfulConcurrencyResult,
+  runSettledWithConcurrency,
+} from "./concurrency";
 
 export interface UriLike {
   fsPath: string;
@@ -45,6 +49,8 @@ export interface FolderStatusSummary {
   baseBranchMoved: boolean;
   dirtyEditors: number;
 }
+
+export const REFRESH_STATUS_CONCURRENCY = 6;
 
 export function createEmptyFolderStatusSummary(): FolderStatusSummary {
   return {
@@ -227,33 +233,43 @@ export async function refreshBaseBranchForRepositories(
   repositories: readonly GitRepositoryLike[],
   baseBranch: string,
 ): Promise<{ attempted: number; refreshed: number }> {
-  let attempted = 0;
-  let refreshed = 0;
+  const fetchableRepositories = repositories
+    .map((repository) => ({
+      repository,
+      remotes: getFetchRemoteCandidates(repository),
+    }))
+    .filter(
+      (entry): entry is {
+        repository: GitRepositoryLike & {
+          fetch(options?: { remote?: string; ref?: string }): Promise<void>;
+        };
+        remotes: string[];
+      } => entry.repository.fetch !== undefined && entry.remotes.length > 0,
+    );
 
-  for (const repository of repositories) {
-    if (!repository.fetch) {
-      continue;
-    }
-
-    const remotes = getFetchRemoteCandidates(repository);
-    if (remotes.length === 0) {
-      continue;
-    }
-
-    attempted += 1;
-
-    for (const remote of remotes) {
-      try {
-        await repository.fetch({ remote, ref: baseBranch });
-        refreshed += 1;
-        break;
-      } catch {
-        continue;
+  const results = await runSettledWithConcurrency(
+    fetchableRepositories,
+    REFRESH_STATUS_CONCURRENCY,
+    async ({ repository, remotes }) => {
+      for (const remote of remotes) {
+        try {
+          await repository.fetch({ remote, ref: baseBranch });
+          return true;
+        } catch {
+          continue;
+        }
       }
-    }
-  }
 
-  return { attempted, refreshed };
+      return false;
+    },
+  );
+
+  return {
+    attempted: fetchableRepositories.length,
+    refreshed: results.filter(
+      (result) => isSuccessfulConcurrencyResult(result) && result.value,
+    ).length,
+  };
 }
 
 export async function buildFolderStatusSummaries(

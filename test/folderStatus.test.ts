@@ -7,6 +7,7 @@ import {
   getBaseBranchRefCandidates,
   getFetchRemoteCandidates,
   isPathInsideFolder,
+  REFRESH_STATUS_CONCURRENCY,
   refreshBaseBranchForRepositories,
   repositoryNeedsBaseBranchUpdate,
   repositoryNeedsRemoteBranchUpdate,
@@ -233,6 +234,70 @@ test("refreshBaseBranchForRepositories fetches the configured base branch", asyn
 
   assert.deepEqual(result, { attempted: 1, refreshed: 1 });
   assert.deepEqual(fetchCalls, [{ remote: "origin", ref: "main" }]);
+});
+
+test("refreshBaseBranchForRepositories refreshes repositories concurrently", async () => {
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  const repositories = Array.from(
+    { length: REFRESH_STATUS_CONCURRENCY + 2 },
+    (_, index) => {
+      const repository = createRepository(`/workspace/repo-${index}`);
+
+      repository.fetch = async () => {
+        activeFetches += 1;
+        maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeFetches -= 1;
+      };
+
+      return repository;
+    },
+  );
+
+  const result = await refreshBaseBranchForRepositories(repositories, "main");
+
+  assert.deepEqual(result, {
+    attempted: REFRESH_STATUS_CONCURRENCY + 2,
+    refreshed: REFRESH_STATUS_CONCURRENCY + 2,
+  });
+  assert.equal(maxActiveFetches, REFRESH_STATUS_CONCURRENCY);
+});
+
+test("refreshBaseBranchForRepositories falls back to the next remote", async () => {
+  const fetchCalls: Array<{ remote?: string; ref?: string }> = [];
+  const repository = createRepository("/workspace/home");
+
+  repository.state.remotes = [
+    { name: "origin" },
+    { name: "backup" },
+  ];
+  repository.fetch = async (options) => {
+    fetchCalls.push(options ?? {});
+
+    if (options?.remote === "origin") {
+      throw new Error("origin unavailable");
+    }
+  };
+
+  const result = await refreshBaseBranchForRepositories([repository], "main");
+
+  assert.deepEqual(result, { attempted: 1, refreshed: 1 });
+  assert.deepEqual(fetchCalls, [
+    { remote: "origin", ref: "main" },
+    { remote: "backup", ref: "main" },
+  ]);
+});
+
+test("refreshBaseBranchForRepositories counts failed repositories", async () => {
+  const repository = createRepository("/workspace/home");
+  repository.fetch = async () => {
+    throw new Error("all remotes unavailable");
+  };
+
+  const result = await refreshBaseBranchForRepositories([repository], "main");
+
+  assert.deepEqual(result, { attempted: 1, refreshed: 0 });
 });
 
 test("buildFolderStatusSummaries maps each folder to its status summary", async () => {

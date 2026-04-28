@@ -24,6 +24,7 @@ import {
 import {
   buildFolderStatusSummaries,
   createEmptyFolderStatusSummary,
+  REFRESH_STATUS_CONCURRENCY,
   refreshBaseBranchForRepositories,
   toFolderUiState,
   type GitRepositoryLike,
@@ -50,6 +51,10 @@ import {
   toRebaseSuccessMessage,
 } from "./rebaseBase";
 import { toRefreshStatusMessage } from "./refreshStatus";
+import {
+  isSuccessfulConcurrencyResult,
+  runSettledWithConcurrency,
+} from "./concurrency";
 
 interface GitApiLike {
   repositories: readonly GitRepositoryLike[];
@@ -629,18 +634,31 @@ async function refreshWorkspaceFolderRemoteStatuses(
   const document = await vscode.workspace.openTextDocument(workspaceFileUri);
   const originalContent = document.getText();
   let nextContent = originalContent;
-  let refreshedCount = 0;
+  const refreshedEntries = await runSettledWithConcurrency(
+    linkedFolders,
+    REFRESH_STATUS_CONCURRENCY,
+    async ({ folder, metadata }) => ({
+      folder,
+      metadata: await refreshWorkspaceFolderRemoteLinkMetadata(metadata),
+    }),
+  );
+  const failedEntry = refreshedEntries.find(
+    (entry) => !isSuccessfulConcurrencyResult(entry),
+  );
 
-  for (const { folder, metadata } of linkedFolders) {
-    const refreshedMetadata = await refreshWorkspaceFolderRemoteLinkMetadata(metadata);
+  if (failedEntry) {
+    throw failedEntry.error;
+  }
+
+  for (const entry of refreshedEntries.filter(isSuccessfulConcurrencyResult)) {
+    const { folder, metadata } = entry.value;
     const updated = addAbsoluteFolderToWorkspaceFileContent(
       nextContent,
       workspaceFilePath,
       folder.uri.fsPath,
-      refreshedMetadata,
+      metadata,
     );
     nextContent = updated.content;
-    refreshedCount += 1;
     clearCachedPrWorktreeInspection(folder.uri.fsPath);
   }
 
@@ -648,7 +666,7 @@ async function refreshWorkspaceFolderRemoteStatuses(
     await saveWorkspaceFileDocument(document, nextContent);
   }
 
-  return refreshedCount;
+  return refreshedEntries.length;
 }
 
 async function refreshWorkspaceFolderRemoteLinkMetadata(
