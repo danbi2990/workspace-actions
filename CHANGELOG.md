@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 - 2026-04-29
 
 - Refresh linked GitHub PR and issue status with a small concurrency queue, so
   `Workspace Actions: Refresh Status` no longer waits for every remote lookup
