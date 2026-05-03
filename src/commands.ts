@@ -11,6 +11,8 @@ export const ADD_WORKSPACE_FOLDER_COMMAND =
   "workspace-actions.addWorkspaceFolder";
 export const ADD_LOCAL_WORKTREE_FROM_GITHUB_URL_COMMAND =
   "workspace-actions.addLocalWorktreeFromGitHubUrl";
+export const CREATE_WORKSPACE_COMMAND =
+  "workspace-actions.createWorkspace";
 
 export interface UriLike {
   fsPath: string;
@@ -243,6 +245,25 @@ export interface AddWorkspaceFolderDependencies {
   showErrorMessage(message: string): Thenable<string | undefined>;
 }
 
+export interface CreateWorkspaceDependencies {
+  workspaceRoots: readonly string[] | undefined;
+  pathExists(fsPath: string): boolean;
+  showRootQuickPick(
+    items: readonly WorkspaceFolderRootQuickPickItem[],
+    options: { placeHolder: string },
+  ): Thenable<WorkspaceFolderRootQuickPickItem | undefined>;
+  showInputBox(options: {
+    placeHolder: string;
+    prompt: string;
+  }): Thenable<string | undefined>;
+  createDirectory(fsPath: string): Thenable<void>;
+  writeFile(fsPath: string, content: string): Thenable<void>;
+  openWorkspace(workspaceFilePath: string): Thenable<void>;
+  showInformationMessage(message: string): Thenable<string | undefined>;
+  showWarningMessage(message: string): Thenable<string | undefined>;
+  showErrorMessage(message: string): Thenable<string | undefined>;
+}
+
 export interface AddWorkspaceFolderFromUrlDependencies {
   workspaceFilePath: string | undefined;
   showInputBox(options: {
@@ -279,6 +300,9 @@ const ADD_WORKSPACE_FOLDER_PLACEHOLDER =
   "Choose a folder to add to the workspace";
 const ADD_WORKSPACE_FOLDER_FROM_URL_PLACEHOLDER =
   "Paste a GitHub issue or pull request URL";
+const CREATE_WORKSPACE_NAME_PLACEHOLDER = "new-workspace-name";
+const CHOOSE_WORKSPACE_ROOT_PLACEHOLDER =
+  "Choose where to create the workspace";
 const CREATE_NEW_FOLDER_LABEL = "$(add) Create New Folder...";
 
 export function toQuickPickItems(
@@ -634,7 +658,7 @@ export async function addWorkspaceFolder(
     return;
   }
 
-  const rootPaths = getConfiguredWorkspaceFolderRoots(deps.workspaceFolderRoots);
+  const rootPaths = getConfiguredRootPaths(deps.workspaceFolderRoots);
   if (rootPaths.length === 0) {
     await deps.showInformationMessage(
       "Set workspaceActions.workspaceFolderRoots before using this command.",
@@ -684,6 +708,59 @@ export async function addWorkspaceFolder(
     }
   } catch (error) {
     await deps.showErrorMessage(toErrorMessage(error));
+  }
+}
+
+export async function createWorkspace(
+  deps: CreateWorkspaceDependencies,
+): Promise<void> {
+  const rootPaths = getConfiguredRootPaths(deps.workspaceRoots);
+  if (rootPaths.length === 0) {
+    await deps.showInformationMessage(
+      "Set workspaceActions.workspaceRoots before using this command.",
+    );
+    return;
+  }
+
+  try {
+    const rootPath = await resolveWorkspaceRoot(rootPaths, deps);
+    if (!rootPath) {
+      return;
+    }
+
+    if (!deps.pathExists(rootPath)) {
+      await deps.showErrorMessage(
+        `Configured workspace root does not exist: ${rootPath}`,
+      );
+      return;
+    }
+
+    const workspaceName = await promptForWorkspaceName(deps);
+    if (!workspaceName) {
+      return;
+    }
+
+    const workspaceFolderPath = path.join(rootPath, workspaceName);
+    const workspaceFilePath = path.join(
+      workspaceFolderPath,
+      `${workspaceName}.code-workspace`,
+    );
+
+    if (deps.pathExists(workspaceFolderPath)) {
+      await deps.showWarningMessage(
+        `Workspace already exists: ${workspaceFolderPath}`,
+      );
+      return;
+    }
+
+    await deps.createDirectory(workspaceFolderPath);
+    await deps.writeFile(workspaceFilePath, toNewWorkspaceFileContent());
+    void deps.showInformationMessage(
+      `Created workspace: ${workspaceFilePath}`,
+    );
+    await deps.openWorkspace(workspaceFilePath);
+  } catch (error) {
+    await deps.showErrorMessage(toCreateWorkspaceErrorMessage(error));
   }
 }
 
@@ -1066,6 +1143,13 @@ async function resolveWorkspaceFolderRoot(
   rootPaths: readonly string[],
   deps: AddWorkspaceFolderDependencies,
 ): Promise<string | undefined> {
+  return resolveWorkspaceRoot(rootPaths, deps);
+}
+
+async function resolveWorkspaceRoot(
+  rootPaths: readonly string[],
+  deps: Pick<CreateWorkspaceDependencies, "showRootQuickPick">,
+): Promise<string | undefined> {
   if (rootPaths.length === 1) {
     return rootPaths[0];
   }
@@ -1078,6 +1162,58 @@ async function resolveWorkspaceFolderRoot(
   );
 
   return picked?.rootPath;
+}
+
+async function promptForWorkspaceName(
+  deps: Pick<CreateWorkspaceDependencies, "showInputBox" | "showWarningMessage">,
+): Promise<string | undefined> {
+  const value = await deps.showInputBox({
+    placeHolder: CREATE_WORKSPACE_NAME_PLACEHOLDER,
+    prompt: "Enter a name for the new workspace",
+  });
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const workspaceName = value.trim();
+  if (workspaceName.length === 0) {
+    await deps.showWarningMessage("Workspace name is required.");
+    return undefined;
+  }
+
+  if (!isValidWorkspaceName(workspaceName)) {
+    await deps.showWarningMessage(
+      "Workspace name cannot contain path separators.",
+    );
+    return undefined;
+  }
+
+  return workspaceName;
+}
+
+export function toNewWorkspaceFileContent(): string {
+  return `${JSON.stringify(
+    {
+      folders: [
+        {
+          path: ".",
+        },
+      ],
+      settings: {},
+    },
+    undefined,
+    2,
+  )}\n`;
+}
+
+function isValidWorkspaceName(workspaceName: string): boolean {
+  return (
+    workspaceName !== "." &&
+    workspaceName !== ".." &&
+    !workspaceName.includes("/") &&
+    !workspaceName.includes("\\")
+  );
 }
 
 function toErrorMessage(error: unknown): string {
@@ -1094,6 +1230,14 @@ function toAddWorkspaceFolderFromUrlErrorMessage(error: unknown): string {
   }
 
   return "Failed to add a workspace folder from URL.";
+}
+
+function toCreateWorkspaceErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) {
+    return error.message;
+  }
+
+  return "Failed to create a workspace.";
 }
 
 function toCleanupBadge(candidate: WorkspaceCleanupCandidate): string {
@@ -1294,10 +1438,10 @@ function deduplicateIcons(icons: readonly (string | undefined)[]): string[] {
   );
 }
 
-function getConfiguredWorkspaceFolderRoots(
-  workspaceFolderRoots: readonly string[] | undefined,
+function getConfiguredRootPaths(
+  rootPaths: readonly string[] | undefined,
 ): string[] {
-  return (workspaceFolderRoots ?? [])
+  return (rootPaths ?? [])
     .map((rootPath) => rootPath.trim())
     .filter((rootPath) => rootPath.length > 0);
 }

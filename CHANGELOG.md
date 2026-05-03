@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `Workspace Actions: Create Workspace` to create and immediately open a
+  new `.code-workspace` file under a configured workspace root.
+
 ## 0.0.4 - 2026-04-29
 
 - Refresh linked GitHub PR and issue status with a small concurrency queue, so

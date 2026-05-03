@@ -21,6 +21,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onCommand:workspace-actions.createWorkspace",
     "onCommand:workspace-actions.addWorkspaceFolder",
     "onCommand:workspace-actions.addLocalWorktreeFromGitHubUrl",
     "onCommand:workspace-actions.copyWorkspaceFolderPaths",
@@ -29,6 +30,10 @@
   "main": "./dist/src/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "workspace-actions.createWorkspace",
+        "title": "Workspace Actions: Create Workspace"
+      },
       {
         "command": "workspace-actions.addWorkspaceFolder",
         "title": "Workspace Actions: Add Workspace Folder"
@@ -53,6 +58,14 @@
           "type": "string",
           "default": "main",
           "description": "Base branch name used to detect whether the current branch is behind."
+        },
+        "workspaceActions.workspaceRoots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Root folders used when creating new .code-workspace files."
         },
         "workspaceActions.workspaceFolderRoots": {
           "type": "array",

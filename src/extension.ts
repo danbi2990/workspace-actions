@@ -6,9 +6,11 @@ import * as vscode from "vscode";
 import {
   ADD_LOCAL_WORKTREE_FROM_GITHUB_URL_COMMAND,
   ADD_WORKSPACE_FOLDER_COMMAND,
+  CREATE_WORKSPACE_COMMAND,
   COPY_WORKSPACE_FOLDER_PATHS_COMMAND,
   addWorkspaceFolderFromUrl,
   addWorkspaceFolder,
+  createWorkspace,
   copyWorkspaceFolderPaths,
   findWorkspaceFolderByMnemonic,
   findWorkspaceFolderActionByMnemonic,
@@ -68,6 +70,8 @@ interface GitExtensionExports {
 const REFRESH_STATUS_COMMAND =
   "workspace-actions.refreshStatus";
 const BASE_BRANCH_CONFIG_KEY = "workspaceActions.baseBranch";
+const WORKSPACE_ROOTS_CONFIG_KEY =
+  "workspaceActions.workspaceRoots";
 const WORKSPACE_FOLDER_ROOTS_CONFIG_KEY =
   "workspaceActions.workspaceFolderRoots";
 const EMPTY_FOLDER_UI_STATE = toFolderUiState(createEmptyFolderStatusSummary());
@@ -118,6 +122,12 @@ function getWorkspaceFolderRoots(): readonly string[] {
   return vscode.workspace
     .getConfiguration()
     .get<string[]>(WORKSPACE_FOLDER_ROOTS_CONFIG_KEY, []);
+}
+
+function getWorkspaceRoots(): readonly string[] {
+  return vscode.workspace
+    .getConfiguration()
+    .get<string[]>(WORKSPACE_ROOTS_CONFIG_KEY, []);
 }
 
 function getOrCreateTerminal(): vscode.Terminal {
@@ -258,6 +268,40 @@ function showWorkspaceFolderActionQuickPick(
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.commands.registerCommand(CREATE_WORKSPACE_COMMAND, async () => {
+      await createWorkspace({
+        workspaceRoots: getWorkspaceRoots(),
+        pathExists: (fsPath) => fs.existsSync(fsPath),
+        showRootQuickPick: (items, options) =>
+          vscode.window.showQuickPick(items, options),
+        showInputBox: (options) => vscode.window.showInputBox(options),
+        createDirectory: async (fsPath) => {
+          await fs.promises.mkdir(fsPath, { recursive: false });
+        },
+        writeFile: async (fsPath, content) => {
+          await fs.promises.writeFile(fsPath, content, {
+            encoding: "utf8",
+            flag: "wx",
+          });
+        },
+        openWorkspace: async (workspaceFilePath) => {
+          await vscode.commands.executeCommand(
+            "vscode.openFolder",
+            vscode.Uri.file(workspaceFilePath),
+            false,
+          );
+        },
+        showInformationMessage: (message) =>
+          vscode.window.showInformationMessage(message),
+        showWarningMessage: (message) =>
+          vscode.window.showWarningMessage(message),
+        showErrorMessage: (message) =>
+          vscode.window.showErrorMessage(message),
+      });
+    }),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand(ADD_WORKSPACE_FOLDER_COMMAND, async () => {
       await addWorkspaceFolder({

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addWorkspaceFolderFromUrl,
   addWorkspaceFolder,
+  createWorkspace,
   copyWorkspaceFolderPaths,
   findWorkspaceFolderByMnemonic,
   findWorkspaceFolderActionByMnemonic,
@@ -12,8 +13,10 @@ import {
   toPrWorktreeQuickPickItems,
   toQuickPickItems,
   toWorkspaceFolderActionQuickPickItems,
+  toNewWorkspaceFileContent,
   toWorkspaceFolderRootQuickPickItems,
   type CopyWorkspaceFolderPathsDependencies,
+  type CreateWorkspaceDependencies,
   type IssueWorktreeCandidate,
   type MissingWorkspaceFolderCandidate,
   type PrWorktreeCandidate,
@@ -120,6 +123,24 @@ function createCopyWorkspaceFolderPathsDependencies(
     confirmRemoval: async () => false,
     removeWorktree: async () => undefined,
     removeFolderFromWorkspace: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async () => undefined,
+    showErrorMessage: async () => undefined,
+    ...overrides,
+  };
+}
+
+function createCreateWorkspaceDependencies(
+  overrides: Partial<CreateWorkspaceDependencies> = {},
+): CreateWorkspaceDependencies {
+  return {
+    workspaceRoots: ["/workspaces"],
+    pathExists: (fsPath) => fsPath === "/workspaces",
+    showRootQuickPick: async () => undefined,
+    showInputBox: async () => undefined,
+    createDirectory: async () => undefined,
+    writeFile: async () => undefined,
+    openWorkspace: async () => undefined,
     showInformationMessage: async () => undefined,
     showWarningMessage: async () => undefined,
     showErrorMessage: async () => undefined,
@@ -1770,6 +1791,218 @@ test("addWorkspaceFolder warns when new folder name input is blank", async () =>
 
   assert.deepEqual(warnings, ["Folder name is required."]);
   assert.deepEqual(createdFolders, []);
+});
+
+test("toNewWorkspaceFileContent includes the containing folder", () => {
+  assert.equal(
+    toNewWorkspaceFileContent(),
+    `{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {}
+}
+`,
+  );
+});
+
+test("createWorkspace requires the workspace root setting", async () => {
+  const messages: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    workspaceRoots: ["   "],
+    showInformationMessage: async (message) => {
+      messages.push(message);
+      return undefined;
+    },
+  }));
+
+  assert.deepEqual(messages, [
+    "Set workspaceActions.workspaceRoots before using this command.",
+  ]);
+});
+
+test("createWorkspace shows an error when the configured root does not exist", async () => {
+  const errors: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    workspaceRoots: ["/missing"],
+    pathExists: () => false,
+    showInputBox: async () => "new-home",
+    showErrorMessage: async (message) => {
+      errors.push(message);
+      return undefined;
+    },
+  }));
+
+  assert.deepEqual(errors, [
+    "Configured workspace root does not exist: /missing",
+  ]);
+});
+
+test("createWorkspace creates and opens a workspace with itself as a folder", async () => {
+  const createdFolders: string[] = [];
+  const writtenFiles: Array<{ fsPath: string; content: string }> = [];
+  const openedWorkspaces: string[] = [];
+  const infoMessages: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    showRootQuickPick: async () => {
+      throw new Error("should not be called");
+    },
+    showInputBox: async () => "new-home",
+    createDirectory: async (fsPath) => {
+      createdFolders.push(fsPath);
+    },
+    writeFile: async (fsPath, content) => {
+      writtenFiles.push({ fsPath, content });
+    },
+    openWorkspace: async (workspaceFilePath) => {
+      openedWorkspaces.push(workspaceFilePath);
+    },
+    showInformationMessage: async (message) => {
+      infoMessages.push(message);
+      return undefined;
+    },
+  }));
+
+  assert.deepEqual(createdFolders, ["/workspaces/new-home"]);
+  assert.deepEqual(writtenFiles, [
+    {
+      fsPath: "/workspaces/new-home/new-home.code-workspace",
+      content: toNewWorkspaceFileContent(),
+    },
+  ]);
+  assert.deepEqual(infoMessages, [
+    "Created workspace: /workspaces/new-home/new-home.code-workspace",
+  ]);
+  assert.deepEqual(openedWorkspaces, [
+    "/workspaces/new-home/new-home.code-workspace",
+  ]);
+});
+
+test("createWorkspace opens without waiting for the notification", async () => {
+  const openedWorkspaces: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    showInputBox: async () => "quick-open",
+    openWorkspace: async (workspaceFilePath) => {
+      openedWorkspaces.push(workspaceFilePath);
+    },
+    showInformationMessage: () => new Promise(() => undefined),
+  }));
+
+  assert.deepEqual(openedWorkspaces, [
+    "/workspaces/quick-open/quick-open.code-workspace",
+  ]);
+});
+
+test("createWorkspace asks for a root first when multiple roots are configured", async () => {
+  const rootLabels: string[] = [];
+  const createdFolders: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    workspaceRoots: ["/roots/one", "/roots/two"],
+    pathExists: (fsPath) => fsPath === "/roots/one" || fsPath === "/roots/two",
+    showRootQuickPick: async (items) => {
+      rootLabels.push(...items.map((item) => item.label));
+      return items[1];
+    },
+    showInputBox: async () => "project",
+    createDirectory: async (fsPath) => {
+      createdFolders.push(fsPath);
+    },
+  }));
+
+  assert.deepEqual(rootLabels, ["one", "two"]);
+  assert.deepEqual(createdFolders, ["/roots/two/project"]);
+});
+
+test("createWorkspace stops when the root picker is cancelled", async () => {
+  let nameInputCalled = false;
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    workspaceRoots: ["/roots/one", "/roots/two"],
+    showRootQuickPick: async () => undefined,
+    showInputBox: async () => {
+      nameInputCalled = true;
+      return undefined;
+    },
+  }));
+
+  assert.equal(nameInputCalled, false);
+});
+
+test("createWorkspace stops when the name input is cancelled", async () => {
+  const createdFolders: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    showInputBox: async () => undefined,
+    createDirectory: async (fsPath) => {
+      createdFolders.push(fsPath);
+    },
+  }));
+
+  assert.deepEqual(createdFolders, []);
+});
+
+test("createWorkspace warns when the workspace already exists", async () => {
+  const warnings: string[] = [];
+  const createdFolders: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    pathExists: (fsPath) =>
+      fsPath === "/workspaces" || fsPath === "/workspaces/existing",
+    showInputBox: async () => "existing",
+    createDirectory: async (fsPath) => {
+      createdFolders.push(fsPath);
+    },
+    writeFile: async () => undefined,
+    openWorkspace: async () => undefined,
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async (message) => {
+      warnings.push(message);
+      return undefined;
+    },
+  }));
+
+  assert.deepEqual(warnings, [
+    "Workspace already exists: /workspaces/existing",
+  ]);
+  assert.deepEqual(createdFolders, []);
+});
+
+test("createWorkspace rejects blank and nested workspace names", async () => {
+  const warnings: string[] = [];
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    showInputBox: async () => "nested/project",
+    createDirectory: async () => {
+      throw new Error("should not be called");
+    },
+    showWarningMessage: async (message) => {
+      warnings.push(message);
+      return undefined;
+    },
+  }));
+
+  await createWorkspace(createCreateWorkspaceDependencies({
+    showInputBox: async () => "   ",
+    createDirectory: async () => {
+      throw new Error("should not be called");
+    },
+    showWarningMessage: async (message) => {
+      warnings.push(message);
+      return undefined;
+    },
+  }));
+
+  assert.deepEqual(warnings, [
+    "Workspace name cannot contain path separators.",
+    "Workspace name is required.",
+  ]);
 });
 
 test("addWorkspaceFolderFromUrl requires a saved workspace file", async () => {

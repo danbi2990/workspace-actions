@@ -5,6 +5,7 @@ workspaces, local Git worktrees, and GitHub-linked folders without leaving the
 keyboard.
 
 It helps you:
+- create a new `.code-workspace` file and open it immediately
 - add existing folders to the current `.code-workspace`
 - create a new folder and add it to the workspace in one flow
 - create a local worktree from a GitHub issue or pull request URL and add it
@@ -22,13 +23,42 @@ It helps you:
 
 ## Quick Start
 
-1. Set `workspaceActions.workspaceFolderRoots` to the root folders you want to
+1. Set `workspaceActions.workspaceRoots` to the root folders where new
+   workspaces should be created.
+2. Set `workspaceActions.workspaceFolderRoots` to the root folders you want to
    browse when adding workspace folders.
-2. Optionally set `workspaceActions.baseBranch` if your default base branch is
+3. Optionally set `workspaceActions.baseBranch` if your default base branch is
    not `main`.
-3. Run one of the commands below from the Command Palette.
+4. Run one of the commands below from the Command Palette.
 
 ## Commands
+
+### Workspace Actions: Create Workspace
+
+Reads roots from `workspaceActions.workspaceRoots`.
+
+If more than one root is configured, the extension first asks where to create
+the workspace. It then asks for a workspace name and creates:
+
+```text
+<workspace-root>/<workspace-name>/<workspace-name>.code-workspace
+```
+
+The created workspace file includes its containing folder as the first
+workspace folder:
+
+```json
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {}
+}
+```
+
+After writing the file, the extension opens the new workspace.
 
 ### Workspace Actions: Add Workspace Folder
 
