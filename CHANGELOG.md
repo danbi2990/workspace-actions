@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.5 - 2026-05-05
 
 - Add `Workspace Actions: Create Workspace` to create and immediately open a
   new `.code-workspace` file under a configured workspace root.

@@ -2,7 +2,7 @@
   "name": "workspace-actions",
   "displayName": "Workspace Actions",
   "description": "Manage multi-root workspaces, local Git worktrees, and GitHub-linked folders from fast keyboard-driven pickers.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "danbi2990",
   "license": "MIT",
   "repository": {
