@@ -11,6 +11,7 @@ await esbuild.build({
   entryPoints: ["src/extension.ts"],
   external: ["vscode"],
   format: "cjs",
+  mainFields: ["module", "main"],
   outfile: "dist/src/extension.js",
   platform: "node",
   sourcemap: false,
