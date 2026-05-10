@@ -1,20 +1,18 @@
 import { rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import * as esbuild from "esbuild";
 
 rmSync(new URL("../dist", import.meta.url), {
   recursive: true,
   force: true,
 });
 
-const result = spawnSync(
-  process.execPath,
-  ["./node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json"],
-  {
-    stdio: "inherit",
-    cwd: new URL("..", import.meta.url),
-  },
-);
-
-if (result.status !== 0) {
-  process.exit(result.status ?? 1);
-}
+await esbuild.build({
+  bundle: true,
+  entryPoints: ["src/extension.ts"],
+  external: ["vscode"],
+  format: "cjs",
+  outfile: "dist/src/extension.js",
+  platform: "node",
+  sourcemap: false,
+  target: "node20",
+});

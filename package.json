@@ -5,6 +5,7 @@
   "version": "0.0.5",
   "publisher": "danbi2990",
   "license": "MIT",
+  "packageManager": "pnpm@10.33.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/danbi2990/workspace-actions.git"
@@ -90,16 +91,17 @@
   },
   "scripts": {
     "build": "node ./scripts/build.mjs",
-    "compile": "npm run build",
+    "compile": "node ./scripts/build.mjs",
     "watch": "tsc -w -p tsconfig.build.json",
     "typecheck": "tsc -p . --noEmit",
-    "test": "npm run typecheck && npm run build && tsx --test test/**/*.test.ts",
-    "package": "npm run build && vsce package"
+    "test": "tsc -p . --noEmit && node ./scripts/build.mjs && tsx --test test/**/*.test.ts",
+    "package": "node ./scripts/build.mjs && vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
     "@types/vscode": "^1.105.0",
     "@vscode/vsce": "^3.6.2",
+    "esbuild": "^0.27.7",
     "tsx": "^4.20.5",
     "typescript": "^5.9.3"
   }
