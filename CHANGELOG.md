@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Show nested Git repositories under their parent workspace folders in the
+  Workspace Folder Actions picker, with indentation and parent-adjacent
+  ordering for easier scanning.
+- Store GitHub PR and issue metadata for nested folders in
+  `workspaceActions.subFolders[].remote`, and refresh those links alongside
+  top-level workspace folder links.
+- Support safe nested-folder actions including send to terminal, copy path,
+  reveal, pull remote branch, rebase onto base branch, link to GitHub, and open
+  saved PR or issue links.
+- Remove mnemonic prefixes from the folder picker so it behaves as a plain text
+  search list while keeping mnemonic shortcuts in the action picker.
+- Add validation and tests for nested Git discovery, `.git` file worktrees,
+  symlink escapes, missing saved subfolders, duplicate labels, and nested action
+  visibility.
+
 ## 0.0.5 - 2026-05-05
 
 - Add `Workspace Actions: Create Workspace` to create and immediately open a
