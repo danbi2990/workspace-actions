@@ -23,15 +23,40 @@ export interface WorkspaceFolderLike {
   uri: UriLike;
 }
 
+export type WorkspaceActionTarget =
+  | WorkspaceFolderActionTarget
+  | WorkspaceSubFolderActionTarget;
+
+export interface WorkspaceFolderActionTarget {
+  kind: "workspaceFolder";
+  label: string;
+  folderName: string;
+  fsPath: string;
+  workspaceFolderPath: string;
+}
+
+export interface WorkspaceSubFolderActionTarget {
+  kind: "subFolder";
+  label: string;
+  folderName: string;
+  fsPath: string;
+  workspaceFolderPath: string;
+  relativePath: string;
+  validationState: "valid" | "missing" | "invalid";
+  isActionable: boolean;
+  remote?: WorkspaceFolderRemoteLinkMetadata;
+}
+
 export interface QuickPickItemLike {
   label: string;
+  detail?: string;
+  target: WorkspaceActionTarget;
   folder: WorkspaceFolderLike;
   folderState?: FolderUiState;
   cleanupCandidate?: WorkspaceCleanupCandidate;
 }
 
 export interface WorkspaceFolderQuickPickItem extends QuickPickItemLike {
-  mnemonic?: string;
 }
 
 export interface WorkspaceFolderCandidate {
@@ -150,14 +175,16 @@ interface WorkspaceFolderActionDefinition {
   action: WorkspaceFolderActionKind;
 }
 
-const WORKSPACE_FOLDER_MNEMONICS = "asdfghjkl;qwertyuiopzxcvbnm,.";
 const WORKSPACE_FOLDER_ACTION_MNEMONIC_PATTERN = /^\[([A-Za-z])\]/;
 
 export interface CopyWorkspaceFolderPathsDependencies {
   workspaceFolders: readonly WorkspaceFolderLike[] | undefined;
-  getFolderUiState(folder: WorkspaceFolderLike): Thenable<FolderUiState>;
+  getSubFolderTargets?(
+    folders: readonly WorkspaceFolderLike[],
+  ): Thenable<readonly WorkspaceSubFolderActionTarget[]>;
+  getFolderUiState(target: WorkspaceActionTarget): Thenable<FolderUiState>;
   inspectWorkspaceFolder(
-    folder: WorkspaceFolderLike,
+    target: WorkspaceActionTarget,
   ): Thenable<WorkspaceCleanupCandidate | undefined>;
   showQuickPick(
     items: readonly WorkspaceFolderQuickPickItem[],
@@ -173,9 +200,9 @@ export interface CopyWorkspaceFolderPathsDependencies {
     options: { placeHolder: string },
   ): Thenable<WorkspaceFolderActionQuickPickItem | undefined>;
   resolveWorkspaceFolderLink(
-    folder: WorkspaceFolderLike,
+    target: WorkspaceActionTarget,
   ): Thenable<WorkspaceFolderLinkTarget | undefined>;
-  linkWorkspaceFolderToGitHub(folder: WorkspaceFolderLike): Thenable<void>;
+  linkWorkspaceFolderToGitHub(target: WorkspaceActionTarget): Thenable<void>;
   sendTextToTerminal(text: string): Thenable<void>;
   copyText(text: string): Thenable<void>;
   openExternalUrls(urls: readonly string[]): Thenable<void>;
@@ -290,6 +317,7 @@ const REMOTE_LINK_ICON = "$(cloud)";
 const COMPLETED_REMOTE_WORK_ICON = "$(pass-filled)";
 const CLOSED_REMOTE_WORK_ICON = "$(circle-slash)";
 const STATUS_ICON_SEPARATOR = "   ";
+const SUB_FOLDER_LABEL_INDENT = "      ";
 const COPY_WORKSPACE_FOLDERS_PLACEHOLDER =
   "Choose a workspace folder";
 const WORKSPACE_FOLDER_ACTION_PLACEHOLDER =
@@ -306,26 +334,33 @@ const CHOOSE_WORKSPACE_ROOT_PLACEHOLDER =
 const CREATE_NEW_FOLDER_LABEL = "$(add) Create New Folder...";
 
 export function toQuickPickItems(
-  folders: readonly WorkspaceFolderLike[],
+  targetsOrFolders: readonly (WorkspaceActionTarget | WorkspaceFolderLike)[],
   folderStates: ReadonlyMap<string, FolderUiState>,
   cleanupCandidates: ReadonlyMap<string, WorkspaceCleanupCandidate> = new Map(),
   linkTargets: ReadonlyMap<string, WorkspaceFolderLinkTarget> = new Map(),
 ): WorkspaceFolderQuickPickItem[] {
-  return folders.map((folder, index) => {
-    const mnemonic = WORKSPACE_FOLDER_MNEMONICS[index];
+  const targets = targetsOrFolders.map(toWorkspaceActionTarget);
+  const duplicatedLabels = toDuplicatedTargetLabels(targets);
+
+  return targets.map((target, index) => {
+    const originalInput = targetsOrFolders[index];
+    const folder = originalInput && !("kind" in originalInput)
+      ? originalInput
+      : toWorkspaceFolderLike(target);
     const baseLabel = toWorkspaceFolderLabel(
-      folder,
-      folderStates.get(folder.uri.fsPath),
-      cleanupCandidates.get(folder.uri.fsPath),
-      linkTargets.has(folder.uri.fsPath),
+      target,
+      folderStates.get(target.fsPath),
+      cleanupCandidates.get(target.fsPath),
+      linkTargets.has(target.fsPath),
     );
 
     return {
-      label: mnemonic ? `[${mnemonic.toUpperCase()}] ${baseLabel}` : baseLabel,
-      mnemonic,
+      label: toDisplayWorkspaceFolderLabel(target, baseLabel),
+      detail: duplicatedLabels.has(target.label) ? target.fsPath : undefined,
+      target,
       folder,
-      folderState: folderStates.get(folder.uri.fsPath),
-      cleanupCandidate: cleanupCandidates.get(folder.uri.fsPath),
+      folderState: folderStates.get(target.fsPath),
+      cleanupCandidate: cleanupCandidates.get(target.fsPath),
     };
   });
 }
@@ -340,15 +375,16 @@ export async function copyWorkspaceFolderPaths(
     return;
   }
 
-  const linkTargets = await buildLinkTargetMap(
-    folders,
+  const workspaceTargets = folders.map(toWorkspaceFolderActionTarget);
+  const initialLinkTargets = await buildLinkTargetMap(
+    workspaceTargets,
     deps.resolveWorkspaceFolderLink,
   );
   const initialFolderItems = toQuickPickItems(
-    folders,
+    workspaceTargets,
     new Map(),
     new Map(),
-    linkTargets,
+    initialLinkTargets,
   );
   let loadedFolderItems: WorkspaceFolderQuickPickItem[] | undefined;
   let loadFolderItemsPromise:
@@ -363,18 +399,30 @@ export async function copyWorkspaceFolderPaths(
     }
 
     if (!loadFolderItemsPromise) {
-      loadFolderItemsPromise = Promise.all([
-        buildFolderStateMap(folders, deps.getFolderUiState),
-        buildCleanupCandidateMap(folders, deps.inspectWorkspaceFolder),
-      ]).then(([folderStates, cleanupCandidates]) => {
+      loadFolderItemsPromise = (async () => {
+        const subFolderTargets = deps.getSubFolderTargets
+          ? await deps.getSubFolderTargets(folders)
+          : [];
+        const targets = interleaveWorkspaceTargets(
+          workspaceTargets,
+          subFolderTargets,
+        );
+        const linkTargets = await buildLinkTargetMap(
+          targets,
+          deps.resolveWorkspaceFolderLink,
+        );
+        const [folderStates, cleanupCandidates] = await Promise.all([
+          buildFolderStateMap(targets, deps.getFolderUiState),
+          buildCleanupCandidateMap(targets, deps.inspectWorkspaceFolder),
+        ]);
         loadedFolderItems = toQuickPickItems(
-          folders,
+          targets,
           folderStates,
           cleanupCandidates,
           linkTargets,
         );
         return loadedFolderItems;
-      });
+      })();
     }
 
     return loadFolderItemsPromise;
@@ -400,14 +448,14 @@ export async function copyWorkspaceFolderPaths(
         ? await enrichPickedFolderItem(picked, loadFolderItems)
         : picked;
 
-    const selectedFolders = [enrichedPicked.folder];
+    const selectedTargets = [enrichedPicked.target];
     const selectedFolderStates = [enrichedPicked.folderState];
-    const selectedPaths = toWorkspaceFolderPaths(selectedFolders);
+    const selectedPaths = toWorkspaceFolderPaths(selectedTargets);
     const selectedCleanupCandidates = toSelectedCleanupCandidates([enrichedPicked]);
 
     const action = await deps.showActionQuickPick(
       toWorkspaceFolderActionQuickPickItems(
-        selectedFolders,
+        selectedTargets,
         selectedFolderStates,
         selectedCleanupCandidates,
         deps.workspaceFilePath !== undefined,
@@ -423,7 +471,7 @@ export async function copyWorkspaceFolderPaths(
 
     await performWorkspaceFolderAction(
       action.action,
-      selectedFolders,
+      selectedTargets,
       selectedPaths,
       selectedCleanupCandidates,
       deps,
@@ -473,18 +521,28 @@ export function toPrWorktreeQuickPickItems(
 }
 
 export function toWorkspaceFolderActionQuickPickItems(
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargetsOrFolders: readonly (WorkspaceActionTarget | WorkspaceFolderLike)[],
   selectedFolderStates: readonly (FolderUiState | undefined)[],
   cleanupCandidates: readonly WorkspaceCleanupCandidate[],
   hasWorkspaceFile = true,
 ): WorkspaceFolderActionQuickPickItem[] {
-  const items = toAlwaysVisibleWorkspaceFolderActions();
+  const selectedTargets = selectedTargetsOrFolders.map(toWorkspaceActionTarget);
+  const items = toAlwaysVisibleWorkspaceFolderActions(selectedTargets);
 
-  if (canLinkWorkspaceFolderToGitHub(selectedFolders, hasWorkspaceFile)) {
+  if (canOpenWorkspaceFolderLinks(selectedTargets)) {
+    items.push(
+      toWorkspaceFolderActionQuickPickItem(
+        "[O] Open PR Or Issue Links",
+        "openLinks",
+      ),
+    );
+  }
+
+  if (canLinkWorkspaceFolderToGitHub(selectedTargets, hasWorkspaceFile)) {
     items.push(toWorkspaceFolderActionQuickPickItem("[L] Link to GitHub", "linkToGitHub"));
   }
 
-  if (canPullRemoteBranches(selectedFolderStates, cleanupCandidates)) {
+  if (canPullRemoteBranches(selectedTargets, selectedFolderStates, cleanupCandidates)) {
     items.push(
       toWorkspaceFolderActionQuickPickItem(
         "[P] Pull Remote Branch",
@@ -493,7 +551,7 @@ export function toWorkspaceFolderActionQuickPickItems(
     );
   }
 
-  if (canPullBaseRepositories(selectedFolderStates, cleanupCandidates)) {
+  if (canPullBaseRepositories(selectedTargets, selectedFolderStates, cleanupCandidates)) {
     items.push(
       toWorkspaceFolderActionQuickPickItem(
         "[B] Pull Base Repository",
@@ -502,7 +560,7 @@ export function toWorkspaceFolderActionQuickPickItems(
     );
   }
 
-  if (canRebaseOntoBaseBranch(selectedFolderStates, cleanupCandidates)) {
+  if (canRebaseOntoBaseBranch(selectedTargets, selectedFolderStates, cleanupCandidates)) {
     items.push(
       toWorkspaceFolderActionQuickPickItem(
         "[M] Rebase onto Base Branch",
@@ -511,7 +569,7 @@ export function toWorkspaceFolderActionQuickPickItems(
     );
   }
 
-  if (canRevealInExplorer(selectedFolders, cleanupCandidates)) {
+  if (canRevealInExplorer(selectedTargets, cleanupCandidates)) {
     items.push(
       toWorkspaceFolderActionQuickPickItem(
         "[R] Reveal in Explorer",
@@ -520,7 +578,7 @@ export function toWorkspaceFolderActionQuickPickItems(
     );
   }
 
-  if (canRemoveFromWorkspace(selectedFolders, hasWorkspaceFile)) {
+  if (canRemoveFromWorkspace(selectedTargets, hasWorkspaceFile)) {
     items.push(
       toWorkspaceFolderActionQuickPickItem(
         "[D] Remove From Workspace",
@@ -544,18 +602,6 @@ export function findWorkspaceFolderActionByMnemonic(
   return items.find((item) => getWorkspaceFolderActionMnemonic(item) === input);
 }
 
-export function findWorkspaceFolderByMnemonic(
-  items: readonly WorkspaceFolderQuickPickItem[],
-  value: string,
-): WorkspaceFolderQuickPickItem | undefined {
-  if (value.length !== 1) {
-    return undefined;
-  }
-
-  const input = value.toLowerCase();
-  return items.find((item) => item.mnemonic === input);
-}
-
 export function getWorkspaceFolderActionMnemonic(
   item: WorkspaceFolderActionQuickPickItem,
 ): string | undefined {
@@ -565,7 +611,7 @@ export function getWorkspaceFolderActionMnemonic(
 
 async function performWorkspaceFolderAction(
   action: WorkspaceFolderActionKind,
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargets: readonly WorkspaceActionTarget[],
   selectedPaths: readonly string[],
   selectedCleanupCandidates: readonly WorkspaceCleanupCandidate[],
   deps: CopyWorkspaceFolderPathsDependencies,
@@ -581,10 +627,10 @@ async function performWorkspaceFolderAction(
       await deps.showInformationMessage("Copied workspace folder paths.");
       return;
     case "openLinks":
-      await openWorkspaceFolderLinks(selectedFolders, deps);
+      await openWorkspaceFolderLinks(selectedTargets, deps);
       return;
     case "linkToGitHub":
-      await deps.linkWorkspaceFolderToGitHub(selectedFolders[0]!);
+      await deps.linkWorkspaceFolderToGitHub(selectedTargets[0]!);
       return;
     case "pullRemoteBranch":
       await deps.pullRemoteBranches(selectedPaths);
@@ -819,13 +865,13 @@ export async function addWorkspaceFolderFromUrl(
 }
 
 async function buildFolderStateMap(
-  folders: readonly WorkspaceFolderLike[],
+  targets: readonly WorkspaceActionTarget[],
   getFolderUiState: CopyWorkspaceFolderPathsDependencies["getFolderUiState"],
 ): Promise<Map<string, FolderUiState>> {
   const stateEntries: Array<readonly [string, FolderUiState]> = await Promise.all(
-    folders.map(async (folder) => [
-      folder.uri.fsPath,
-      await getFolderUiState(folder),
+    targets.map(async (target) => [
+      target.fsPath,
+      await getFolderUiState(target),
     ] as const),
   );
 
@@ -833,13 +879,13 @@ async function buildFolderStateMap(
 }
 
 async function buildCleanupCandidateMap(
-  folders: readonly WorkspaceFolderLike[],
+  targets: readonly WorkspaceActionTarget[],
   inspectWorkspaceFolder: CopyWorkspaceFolderPathsDependencies["inspectWorkspaceFolder"],
 ): Promise<Map<string, WorkspaceCleanupCandidate>> {
   const entries = await Promise.all(
-    folders.map(async (folder) => {
-      const candidate = await inspectWorkspaceFolder(folder);
-      return [folder.uri.fsPath, candidate] as const;
+    targets.map(async (target) => {
+      const candidate = await inspectWorkspaceFolder(target);
+      return [target.fsPath, candidate] as const;
     }),
   );
 
@@ -854,13 +900,13 @@ async function buildCleanupCandidateMap(
 }
 
 async function buildLinkTargetMap(
-  folders: readonly WorkspaceFolderLike[],
+  targets: readonly WorkspaceActionTarget[],
   resolveWorkspaceFolderLink: CopyWorkspaceFolderPathsDependencies["resolveWorkspaceFolderLink"],
 ): Promise<Map<string, WorkspaceFolderLinkTarget>> {
   const entries = await Promise.all(
-    folders.map(async (folder) => {
-      const linkTarget = await resolveWorkspaceFolderLink(folder);
-      return [folder.uri.fsPath, linkTarget] as const;
+    targets.map(async (target) => {
+      const linkTarget = await resolveWorkspaceFolderLink(target);
+      return [target.fsPath, linkTarget] as const;
     }),
   );
 
@@ -875,9 +921,76 @@ async function buildLinkTargetMap(
 }
 
 function toWorkspaceFolderPaths(
-  folders: readonly WorkspaceFolderLike[],
+  targets: readonly WorkspaceActionTarget[],
 ): string[] {
-  return folders.map((folder) => folder.uri.fsPath);
+  return targets.map((target) => target.fsPath);
+}
+
+function interleaveWorkspaceTargets(
+  workspaceTargets: readonly WorkspaceFolderActionTarget[],
+  subFolderTargets: readonly WorkspaceSubFolderActionTarget[],
+): WorkspaceActionTarget[] {
+  const targets: WorkspaceActionTarget[] = [];
+  const subFoldersByWorkspacePath = groupSubFolderTargetsByWorkspacePath(
+    subFolderTargets,
+  );
+  const remainingSubFolders = new Set(subFolderTargets);
+
+  for (const workspaceTarget of workspaceTargets) {
+    targets.push(workspaceTarget);
+
+    for (const childTarget of subFoldersByWorkspacePath.get(
+      toPathKey(workspaceTarget.fsPath),
+    ) ?? []) {
+      targets.push(childTarget);
+      remainingSubFolders.delete(childTarget);
+    }
+  }
+
+  targets.push(...remainingSubFolders);
+  return targets;
+}
+
+function groupSubFolderTargetsByWorkspacePath(
+  subFolderTargets: readonly WorkspaceSubFolderActionTarget[],
+): Map<string, WorkspaceSubFolderActionTarget[]> {
+  const groupedTargets = new Map<string, WorkspaceSubFolderActionTarget[]>();
+  for (const target of subFolderTargets) {
+    const key = toPathKey(target.workspaceFolderPath);
+    const targets = groupedTargets.get(key) ?? [];
+    targets.push(target);
+    groupedTargets.set(key, targets);
+  }
+
+  return groupedTargets;
+}
+
+function toDisplayWorkspaceFolderLabel(
+  target: WorkspaceActionTarget,
+  baseLabel: string,
+): string {
+  return target.kind === "subFolder"
+    ? `${SUB_FOLDER_LABEL_INDENT}${baseLabel}`
+    : baseLabel;
+}
+
+function toDuplicatedTargetLabels(
+  targets: readonly WorkspaceActionTarget[],
+): Set<string> {
+  const labelCounts = new Map<string, number>();
+  for (const target of targets) {
+    labelCounts.set(target.label, (labelCounts.get(target.label) ?? 0) + 1);
+  }
+
+  return new Set(
+    [...labelCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([label]) => label),
+  );
+}
+
+function toPathKey(fsPath: string): string {
+  return path.resolve(fsPath).toLocaleLowerCase();
 }
 
 async function enrichPickedFolderItem(
@@ -897,6 +1010,10 @@ function toSelectedCleanupCandidates(
 ): WorkspaceCleanupCandidate[] {
   return pickedItems
     .map((item) => {
+      if (item.target.kind !== "workspaceFolder") {
+        return undefined;
+      }
+
       if (item.cleanupCandidate) {
         return item.cleanupCandidate;
       }
@@ -923,17 +1040,17 @@ function toSelectedCleanupCandidates(
 }
 
 function toWorkspaceFolderLabel(
-  folder: WorkspaceFolderLike,
+  target: WorkspaceActionTarget,
   state: FolderUiState | undefined,
   cleanupCandidate: WorkspaceCleanupCandidate | undefined,
   hasRemoteLink: boolean,
 ): string {
   const icons = getWorkspaceFolderIcons(state, cleanupCandidate, hasRemoteLink);
   if (icons.length === 0) {
-    return folder.name;
+    return target.label;
   }
 
-  return `${folder.name}${STATUS_ICON_SEPARATOR}${icons.join(" ")}`;
+  return `${target.label}${STATUS_ICON_SEPARATOR}${icons.join(" ")}`;
 }
 
 function getWorkspaceFolderIcons(
@@ -957,32 +1074,52 @@ function hasMissingCleanupCandidate(
   return cleanupCandidates.some((candidate) => candidate.kind === "missing");
 }
 
+function areTargetsActionable(
+  selectedTargets: readonly WorkspaceActionTarget[],
+): boolean {
+  return selectedTargets.every(
+    (target) => target.kind === "workspaceFolder" || target.isActionable,
+  );
+}
+
+function canOpenWorkspaceFolderLinks(
+  selectedTargets: readonly WorkspaceActionTarget[],
+): boolean {
+  return selectedTargets.length > 0 &&
+    selectedTargets.every(
+      (target) => target.kind === "workspaceFolder" || target.remote !== undefined,
+    );
+}
+
 function canPullRemoteBranches(
+  selectedTargets: readonly WorkspaceActionTarget[],
   selectedFolderStates: readonly (FolderUiState | undefined)[],
   cleanupCandidates: readonly WorkspaceCleanupCandidate[],
 ): boolean {
   return (
+    areTargetsActionable(selectedTargets) &&
     !hasMissingCleanupCandidate(cleanupCandidates) &&
     selectedFolderStates.length > 0 &&
     selectedFolderStates.every((state) => state?.hasRemoteBranchTracking === true)
   );
 }
 
-function toAlwaysVisibleWorkspaceFolderActions(): WorkspaceFolderActionQuickPickItem[] {
-  const definitions: readonly WorkspaceFolderActionDefinition[] = [
-    {
+function toAlwaysVisibleWorkspaceFolderActions(
+  selectedTargets: readonly WorkspaceActionTarget[],
+): WorkspaceFolderActionQuickPickItem[] {
+  const definitions: WorkspaceFolderActionDefinition[] = [];
+
+  if (areTargetsActionable(selectedTargets)) {
+    definitions.push({
       label: "[T] Send to Terminal",
       action: "sendToTerminal",
-    },
-    {
-      label: "[C] Copy Paths",
-      action: "copyPaths",
-    },
-    {
-      label: "[O] Open PR Or Issue Links",
-      action: "openLinks",
-    },
-  ];
+    });
+  }
+
+  definitions.push({
+    label: "[C] Copy Paths",
+    action: "copyPaths",
+  });
 
   return definitions.map((definition) =>
     toWorkspaceFolderActionQuickPickItem(
@@ -1000,24 +1137,35 @@ function toWorkspaceFolderActionQuickPickItem(
 }
 
 function canLinkWorkspaceFolderToGitHub(
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargets: readonly WorkspaceActionTarget[],
   hasWorkspaceFile: boolean,
 ): boolean {
-  return hasWorkspaceFile && selectedFolders.length === 1;
+  if (!hasWorkspaceFile || selectedTargets.length !== 1) {
+    return false;
+  }
+
+  const [target] = selectedTargets;
+  return target?.kind === "workspaceFolder" || target?.isActionable === true;
 }
 
 function canRevealInExplorer(
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargets: readonly WorkspaceActionTarget[],
   cleanupCandidates: readonly WorkspaceCleanupCandidate[],
 ): boolean {
-  return selectedFolders.length === 1 && !hasMissingCleanupCandidate(cleanupCandidates);
+  return (
+    selectedTargets.length === 1 &&
+    areTargetsActionable(selectedTargets) &&
+    !hasMissingCleanupCandidate(cleanupCandidates)
+  );
 }
 
 function canPullBaseRepositories(
+  selectedTargets: readonly WorkspaceActionTarget[],
   selectedFolderStates: readonly (FolderUiState | undefined)[],
   cleanupCandidates: readonly WorkspaceCleanupCandidate[],
 ): boolean {
   return (
+    selectedTargets.every((target) => target.kind === "workspaceFolder") &&
     !hasMissingCleanupCandidate(cleanupCandidates) &&
     selectedFolderStates.length > 0 &&
     selectedFolderStates.every((state) => state?.isGitWorktree === true)
@@ -1025,10 +1173,12 @@ function canPullBaseRepositories(
 }
 
 function canRebaseOntoBaseBranch(
+  selectedTargets: readonly WorkspaceActionTarget[],
   selectedFolderStates: readonly (FolderUiState | undefined)[],
   cleanupCandidates: readonly WorkspaceCleanupCandidate[],
 ): boolean {
   return (
+    areTargetsActionable(selectedTargets) &&
     !hasMissingCleanupCandidate(cleanupCandidates) &&
     selectedFolderStates.length === 1 &&
     selectedFolderStates[0]?.baseBranchMoved === true
@@ -1036,10 +1186,14 @@ function canRebaseOntoBaseBranch(
 }
 
 function canRemoveFromWorkspace(
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargets: readonly WorkspaceActionTarget[],
   hasWorkspaceFile: boolean,
 ): boolean {
-  return hasWorkspaceFile && selectedFolders.length > 0;
+  return (
+    hasWorkspaceFile &&
+    selectedTargets.length > 0 &&
+    selectedTargets.every((target) => target.kind === "workspaceFolder")
+  );
 }
 
 async function removeWorkspaceCleanupCandidates(
@@ -1245,7 +1399,7 @@ function toCleanupBadge(candidate: WorkspaceCleanupCandidate): string {
 }
 
 async function openWorkspaceFolderLinks(
-  selectedFolders: readonly WorkspaceFolderLike[],
+  selectedTargets: readonly WorkspaceActionTarget[],
   deps: Pick<
     CopyWorkspaceFolderPathsDependencies,
     | "resolveWorkspaceFolderLink"
@@ -1255,7 +1409,7 @@ async function openWorkspaceFolderLinks(
 ): Promise<void> {
   const targets = (
     await Promise.all(
-      selectedFolders.map((folder) => deps.resolveWorkspaceFolderLink(folder)),
+      selectedTargets.map((target) => deps.resolveWorkspaceFolderLink(target)),
     )
   ).filter(
     (target): target is WorkspaceFolderLinkTarget => target !== undefined,
@@ -1270,7 +1424,7 @@ async function openWorkspaceFolderLinks(
 
   await deps.openExternalUrls(targets.map((target) => target.url));
 
-  const skippedCount = selectedFolders.length - targets.length;
+  const skippedCount = selectedTargets.length - targets.length;
   if (skippedCount === 0) {
     await deps.showInformationMessage(
       `Opened ${targets.length} PR or issue link${targets.length === 1 ? "" : "s"}.`,
@@ -1436,6 +1590,37 @@ function deduplicateIcons(icons: readonly (string | undefined)[]): string[] {
   return [...new Set(icons)].filter(
     (icon): icon is string => icon !== undefined && icon.length > 0,
   );
+}
+
+function toWorkspaceActionTarget(
+  value: WorkspaceActionTarget | WorkspaceFolderLike,
+): WorkspaceActionTarget {
+  if ("kind" in value) {
+    return value;
+  }
+
+  return toWorkspaceFolderActionTarget(value);
+}
+
+function toWorkspaceFolderActionTarget(
+  folder: WorkspaceFolderLike,
+): WorkspaceFolderActionTarget {
+  return {
+    kind: "workspaceFolder",
+    label: folder.name,
+    folderName: folder.name,
+    fsPath: folder.uri.fsPath,
+    workspaceFolderPath: folder.uri.fsPath,
+  };
+}
+
+function toWorkspaceFolderLike(target: WorkspaceActionTarget): WorkspaceFolderLike {
+  return {
+    name: target.folderName,
+    uri: {
+      fsPath: target.fsPath,
+    },
+  };
 }
 
 function getConfiguredRootPaths(

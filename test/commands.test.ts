@@ -5,7 +5,6 @@ import {
   addWorkspaceFolder,
   createWorkspace,
   copyWorkspaceFolderPaths,
-  findWorkspaceFolderByMnemonic,
   findWorkspaceFolderActionByMnemonic,
   getWorkspaceFolderActionMnemonic,
   removeClosedOrMergedPrWorktrees,
@@ -22,6 +21,7 @@ import {
   type PrWorktreeCandidate,
   type WorkspaceFolderCandidate,
   type FolderUiState,
+  type WorkspaceSubFolderActionTarget,
   type WorkspaceFolderLinkTarget,
   type WorkspaceFolderLike,
 } from "../src/commands";
@@ -47,6 +47,22 @@ function createFolderCandidate(
     name,
     fsPath,
     updatedAt,
+  };
+}
+
+function createSubFolderTarget(
+  overrides: Partial<WorkspaceSubFolderActionTarget> = {},
+): WorkspaceSubFolderActionTarget {
+  return {
+    kind: "subFolder",
+    label: "home/workspace-actions",
+    folderName: "workspace-actions",
+    fsPath: "/workspace/home/workspace-actions",
+    workspaceFolderPath: "/workspace/home",
+    relativePath: "workspace-actions",
+    validationState: "valid",
+    isActionable: true,
+    ...overrides,
   };
 }
 
@@ -186,7 +202,7 @@ test("toQuickPickItems appends status icons after the folder name", () => {
   const items = toQuickPickItems([folder], states);
 
   assert.equal(items.length, 1);
-  assert.equal(items[0]?.label, "[A] home   $(git-pull-request-draft) $(diff-modified)");
+  assert.equal(items[0]?.label, "home   $(git-pull-request-draft) $(diff-modified)");
   assert.equal(items[0]?.folder, folder);
 });
 
@@ -195,7 +211,7 @@ test("toQuickPickItems shows plain labels for normal folders", () => {
 
   const items = toQuickPickItems([folder], new Map());
 
-  assert.equal(items[0]?.label, "[A] home");
+  assert.equal(items[0]?.label, "home");
 });
 
 test("toQuickPickItems adds an unsaved icon when needed", () => {
@@ -216,7 +232,7 @@ test("toQuickPickItems adds an unsaved icon when needed", () => {
 
   const items = toQuickPickItems([folder], states);
 
-  assert.equal(items[0]?.label, "[A] home   $(primitive-dot)");
+  assert.equal(items[0]?.label, "home   $(primitive-dot)");
 });
 
 test("toQuickPickItems prepends cleanup badges before other folder state icons", () => {
@@ -240,7 +256,7 @@ test("toQuickPickItems prepends cleanup badges before other folder state icons",
 
   const items = toQuickPickItems([folder], states, cleanupCandidates);
 
-  assert.equal(items[0]?.label, "[A] api   $(pass-filled) $(diff-modified)");
+  assert.equal(items[0]?.label, "api   $(pass-filled) $(diff-modified)");
 });
 
 test("toQuickPickItems adds a cloud badge when a remote PR or issue link exists", () => {
@@ -251,7 +267,7 @@ test("toQuickPickItems adds a cloud badge when a remote PR or issue link exists"
 
   const items = toQuickPickItems([folder], new Map(), new Map(), linkTargets);
 
-  assert.equal(items[0]?.label, "[A] api   $(cloud)");
+  assert.equal(items[0]?.label, "api   $(cloud)");
 });
 
 test("toQuickPickItems shows cleanup and cloud badges together", () => {
@@ -270,7 +286,7 @@ test("toQuickPickItems shows cleanup and cloud badges together", () => {
     linkTargets,
   );
 
-  assert.equal(items[0]?.label, "[A] piglet-issue-1687   $(cloud) $(pass-filled)");
+  assert.equal(items[0]?.label, "piglet-issue-1687   $(cloud) $(pass-filled)");
 });
 
 test("toQuickPickItems keeps remote status icons ordered and deduplicates dirty badges", () => {
@@ -304,37 +320,42 @@ test("toQuickPickItems keeps remote status icons ordered and deduplicates dirty 
 
   assert.equal(
     items[0]?.label,
-    "[A] piglet-issue-1687   $(cloud) $(pass-filled) $(cloud-download) $(git-pull-request-draft) $(diff-modified) $(primitive-dot)",
+    "piglet-issue-1687   $(cloud) $(pass-filled) $(cloud-download) $(git-pull-request-draft) $(diff-modified) $(primitive-dot)",
   );
 });
 
-test("toQuickPickItems assigns folder mnemonics in the expected order", () => {
-  const folders = "asdfghjkl;qwertyuiopzxcvbnm,."
-    .split("")
-    .map((_, index) =>
-      createFolder(`folder-${index + 1}`, `/workspaces/folder-${index + 1}`),
-    );
+test("toQuickPickItems shows nested subfolder labels", () => {
+  const target = createSubFolderTarget();
 
-  const items = toQuickPickItems(folders, new Map());
+  const items = toQuickPickItems([target], new Map());
 
-  assert.deepEqual(
-    items.map((item) => item.mnemonic),
-    "asdfghjkl;qwertyuiopzxcvbnm,.".split(""),
-  );
+  assert.equal(items[0]?.label, "      home/workspace-actions");
+  assert.equal(items[0]?.target, target);
+  assert.deepEqual(items[0]?.folder, {
+    name: "workspace-actions",
+    uri: {
+      fsPath: "/workspace/home/workspace-actions",
+    },
+  });
 });
 
-test("findWorkspaceFolderByMnemonic matches a single typed letter", () => {
-  const items = toQuickPickItems(
-    [
-      createFolder("home", "/workspace/home"),
-      createFolder("dotfiles", "/dotfiles"),
-    ],
-    new Map(),
-  );
+test("toQuickPickItems adds absolute path detail for duplicate labels", () => {
+  const first = createSubFolderTarget({
+    fsPath: "/workspace/home/apps/api",
+    label: "home/apps/api",
+    relativePath: "apps/api",
+  });
+  const second = createSubFolderTarget({
+    fsPath: "/other/home/apps/api",
+    workspaceFolderPath: "/other/home",
+    label: "home/apps/api",
+    relativePath: "apps/api",
+  });
 
-  assert.equal(findWorkspaceFolderByMnemonic(items, "a")?.folder.name, "home");
-  assert.equal(findWorkspaceFolderByMnemonic(items, "S")?.folder.name, "dotfiles");
-  assert.equal(findWorkspaceFolderByMnemonic(items, "as"), undefined);
+  const items = toQuickPickItems([first, second], new Map());
+
+  assert.equal(items[0]?.detail, "/workspace/home/apps/api");
+  assert.equal(items[1]?.detail, "/other/home/apps/api");
 });
 
 test("toAddWorkspaceFolderQuickPickItems keeps the create option first and sorts by updated time", () => {
@@ -700,6 +721,90 @@ test("toWorkspaceFolderActionQuickPickItems shows remove for a regular worktree"
   );
 });
 
+test("toWorkspaceFolderActionQuickPickItems limits nested subfolder actions", () => {
+  const items = toWorkspaceFolderActionQuickPickItems(
+    [createSubFolderTarget()],
+    [
+      {
+        isGitWorktree: true,
+        hasGitChanges: false,
+        hasRemoteBranchTracking: true,
+        remoteBranchMoved: true,
+        baseBranchMoved: true,
+        dirtyEditors: 0,
+      },
+    ],
+    [],
+  );
+
+  assert.ok(items.some((item) => item.action === "sendToTerminal"));
+  assert.ok(items.some((item) => item.action === "copyPaths"));
+  assert.ok(items.some((item) => item.action === "pullRemoteBranch"));
+  assert.ok(items.some((item) => item.action === "rebaseOntoBaseBranch"));
+  assert.ok(items.some((item) => item.action === "revealInExplorer"));
+  assert.ok(items.some((item) => item.action === "linkToGitHub"));
+  assert.ok(!items.some((item) => item.action === "pullBaseRepository"));
+  assert.ok(!items.some((item) => item.action === "removeCleanupItems"));
+  assert.ok(!items.some((item) => item.action === "openLinks"));
+});
+
+test("toWorkspaceFolderActionQuickPickItems shows open links for linked nested subfolders", () => {
+  const items = toWorkspaceFolderActionQuickPickItems(
+    [
+      createSubFolderTarget({
+        remote: {
+          kind: "issue",
+          owner: "danbi2990",
+          repo: "workspace-actions",
+          number: 1,
+          url: "https://github.com/danbi2990/workspace-actions/issues/1",
+        },
+      }),
+    ],
+    [],
+    [],
+  );
+
+  assert.ok(items.some((item) => item.action === "openLinks"));
+});
+
+test("toWorkspaceFolderActionQuickPickItems hides filesystem actions for invalid nested subfolders", () => {
+  const items = toWorkspaceFolderActionQuickPickItems(
+    [
+      createSubFolderTarget({
+        validationState: "missing",
+        isActionable: false,
+        remote: {
+          kind: "issue",
+          owner: "danbi2990",
+          repo: "workspace-actions",
+          number: 1,
+          url: "https://github.com/danbi2990/workspace-actions/issues/1",
+        },
+      }),
+    ],
+    [
+      {
+        isGitWorktree: false,
+        hasGitChanges: false,
+        hasRemoteBranchTracking: true,
+        remoteBranchMoved: false,
+        baseBranchMoved: true,
+        dirtyEditors: 0,
+      },
+    ],
+    [],
+  );
+
+  assert.ok(items.some((item) => item.action === "copyPaths"));
+  assert.ok(items.some((item) => item.action === "openLinks"));
+  assert.ok(!items.some((item) => item.action === "sendToTerminal"));
+  assert.ok(!items.some((item) => item.action === "revealInExplorer"));
+  assert.ok(!items.some((item) => item.action === "pullRemoteBranch"));
+  assert.ok(!items.some((item) => item.action === "rebaseOntoBaseBranch"));
+  assert.ok(!items.some((item) => item.action === "linkToGitHub"));
+});
+
 test("getWorkspaceFolderActionMnemonic extracts the leading mnemonic", () => {
   const [item] = toWorkspaceFolderActionQuickPickItems(
     [createFolder("home", "/workspace/home")],
@@ -787,8 +892,45 @@ test("copyWorkspaceFolderPaths shows the picker even for one workspace folder", 
     },
   }));
 
-  assert.deepEqual(seenLabels, ["[A] home"]);
+  assert.deepEqual(seenLabels, ["home"]);
   assert.deepEqual(terminalWrites, ["/workspace/home"]);
+});
+
+test("copyWorkspaceFolderPaths includes nested subfolder targets in the picker", async () => {
+  const folder = createFolder("home", "/workspace/home/.");
+  const otherFolder = createFolder("dotfiles", "/workspace/dotfiles");
+  const terminalWrites: string[] = [];
+  const seenLabels: string[] = [];
+
+  await copyWorkspaceFolderPaths(createCopyWorkspaceFolderPathsDependencies({
+    workspaceFolders: [folder, otherFolder],
+    getSubFolderTargets: async () => [
+      createSubFolderTarget(),
+    ],
+    showQuickPick: async (items, options) => {
+      seenLabels.push(...items.map((item) => item.label));
+      let loadedItems: readonly typeof items[number][] = [];
+      await options.loadItems?.((nextItems) => {
+        loadedItems = nextItems;
+      });
+      seenLabels.push(...loadedItems.map((item) => item.label));
+      return loadedItems.find((item) => item.target.kind === "subFolder");
+    },
+    showActionQuickPick: async (items) =>
+      items.find((item) => item.action === "sendToTerminal"),
+    sendTextToTerminal: async (text) => {
+      terminalWrites.push(text);
+    },
+  }));
+
+  assert.deepEqual(seenLabels, [
+    "home",
+    "dotfiles",
+    "home",
+    "      home/workspace-actions",
+    "dotfiles",
+  ]);
+  assert.deepEqual(terminalWrites, ["/workspace/home/workspace-actions"]);
 });
 
 test("copyWorkspaceFolderPaths sends every selected folder path to the terminal", async () => {
@@ -804,8 +946,8 @@ test("copyWorkspaceFolderPaths sends every selected folder path to the terminal"
 
   await copyWorkspaceFolderPaths(createCopyWorkspaceFolderPathsDependencies({
     workspaceFolders: [first, second],
-    getFolderUiState: async (folder) =>
-      folder.name === "home"
+    getFolderUiState: async (target) =>
+      target.folderName === "home"
         ? {
             isGitWorktree: false,
             hasGitChanges: true,
@@ -837,8 +979,8 @@ test("copyWorkspaceFolderPaths sends every selected folder path to the terminal"
   }));
 
   assert.deepEqual(seenLabels, [
-    "[A] home",
-    "[S] dotfiles",
+    "home",
+    "dotfiles",
   ]);
   assert.equal(seenOptions.length, 1);
   assert.equal(seenOptions[0]?.placeHolder, "Choose a workspace folder");
@@ -941,12 +1083,74 @@ test("copyWorkspaceFolderPaths links a selected workspace folder to GitHub", asy
     showQuickPick: async (items) => items[0],
     showActionQuickPick: async (items) =>
       items.find((item) => item.action === "linkToGitHub"),
-    linkWorkspaceFolderToGitHub: async (pickedFolder) => {
-      linkedFolders.push(pickedFolder.uri.fsPath);
+    linkWorkspaceFolderToGitHub: async (target) => {
+      linkedFolders.push(target.fsPath);
     },
   }));
 
   assert.deepEqual(linkedFolders, ["/workspace/home"]);
+});
+
+test("copyWorkspaceFolderPaths links a selected nested subfolder to GitHub", async () => {
+  const folder = createFolder("home", "/workspace/home");
+  const linkedTargets: string[] = [];
+
+  await copyWorkspaceFolderPaths(createCopyWorkspaceFolderPathsDependencies({
+    workspaceFolders: [folder],
+    getSubFolderTargets: async () => [
+      createSubFolderTarget(),
+    ],
+    showQuickPick: async (_items, options) => {
+      let loadedItems: readonly typeof _items[number][] = [];
+      await options.loadItems?.((nextItems) => {
+        loadedItems = nextItems;
+      });
+      return loadedItems.find((item) => item.target.kind === "subFolder");
+    },
+    showActionQuickPick: async (items) =>
+      items.find((item) => item.action === "linkToGitHub"),
+    linkWorkspaceFolderToGitHub: async (target) => {
+      linkedTargets.push(`${target.kind}:${target.fsPath}`);
+    },
+  }));
+
+  assert.deepEqual(linkedTargets, [
+    "subFolder:/workspace/home/workspace-actions",
+  ]);
+});
+
+test("copyWorkspaceFolderPaths never removes a nested subfolder target", async () => {
+  const folder = createFolder("home", "/workspace/home");
+  const removedFolders: string[] = [];
+  const removedWorktrees: string[] = [];
+
+  await copyWorkspaceFolderPaths(createCopyWorkspaceFolderPathsDependencies({
+    workspaceFolders: [folder],
+    getSubFolderTargets: async () => [
+      createSubFolderTarget(),
+    ],
+    showQuickPick: async (_items, options) => {
+      let loadedItems: readonly typeof _items[number][] = [];
+      await options.loadItems?.((nextItems) => {
+        loadedItems = nextItems;
+      });
+      return loadedItems.find((item) => item.target.kind === "subFolder");
+    },
+    showActionQuickPick: async () => ({
+      label: "[D] Remove From Workspace",
+      action: "removeCleanupItems",
+    }),
+    confirmRemoval: async () => true,
+    removeWorktree: async (folderPath) => {
+      removedWorktrees.push(folderPath);
+    },
+    removeFolderFromWorkspace: async (_workspaceFilePath, folderPath) => {
+      removedFolders.push(folderPath);
+    },
+  }));
+
+  assert.deepEqual(removedWorktrees, []);
+  assert.deepEqual(removedFolders, []);
 });
 
 test("copyWorkspaceFolderPaths opens resolved PR or issue links for selected folders", async () => {

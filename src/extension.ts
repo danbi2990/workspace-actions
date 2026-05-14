@@ -12,16 +12,17 @@ import {
   addWorkspaceFolder,
   createWorkspace,
   copyWorkspaceFolderPaths,
-  findWorkspaceFolderByMnemonic,
   findWorkspaceFolderActionByMnemonic,
   type MissingWorkspaceFolderCandidate,
   type PrWorktreeCandidate,
   type WorkspaceCleanupCandidate,
+  type WorkspaceActionTarget,
   type WorkspaceFolderActionQuickPickItem,
   type WorkspaceFolderCandidate,
   type WorkspaceFolderLinkTarget,
   type WorkspaceFolderQuickPickItem,
   type WorkspaceFolderLike,
+  type WorkspaceSubFolderActionTarget,
 } from "./commands";
 import {
   buildFolderStatusSummaries,
@@ -34,7 +35,10 @@ import {
 import {
   addAbsoluteFolderToWorkspaceFileContent,
   getWorkspaceFolderLinkMetadataByPath,
+  getWorkspaceSubFolderMetadataByPath,
   removeFolderFromWorkspaceFileContent,
+  upsertWorkspaceSubFolderRemoteMetadataContent,
+  type WorkspaceSubFolderMetadata,
 } from "./workspaceFile";
 import {
   parseGitHubIssueOrPullRequestUrl,
@@ -57,6 +61,10 @@ import {
   isSuccessfulConcurrencyResult,
   runSettledWithConcurrency,
 } from "./concurrency";
+import {
+  buildWorkspaceSubFolderTargets,
+  type FileSystemLike,
+} from "./subFolders";
 
 interface GitApiLike {
   repositories: readonly GitRepositoryLike[];
@@ -77,14 +85,48 @@ const WORKSPACE_FOLDER_ROOTS_CONFIG_KEY =
 const EMPTY_FOLDER_UI_STATE = toFolderUiState(createEmptyFolderStatusSummary());
 const WORKSPACE_ACTIONS_TERMINAL_NAME = "Workspace Actions";
 const PR_WORKTREE_CACHE_TTL_MS = 60_000;
+const SUB_FOLDER_TARGET_CACHE_TTL_MS = 15_000;
 const execFileAsync = promisify(execFile);
 const prWorktreeInspectionCache = new Map<string, CachedPrWorktreeInspection>();
 const NO_PR_WORKTREE_CACHE = Symbol("no-pr-worktree-cache");
+const NODE_FILE_SYSTEM: FileSystemLike = {
+  lstat: (fsPath) => fs.promises.lstat(fsPath),
+  readdir: (fsPath) => fs.promises.readdir(fsPath, { withFileTypes: true }),
+  realpath: (fsPath) => fs.promises.realpath(fsPath),
+  stat: (fsPath) => fs.promises.stat(fsPath),
+};
 
 interface CachedPrWorktreeInspection {
   value: WorkspaceCleanupCandidate | undefined;
   expiresAt: number;
 }
+
+interface CachedSubFolderTargets {
+  key: string;
+  value: readonly WorkspaceSubFolderActionTarget[];
+  expiresAt: number;
+}
+
+interface PendingSubFolderTargets {
+  key: string;
+  promise: Promise<readonly WorkspaceSubFolderActionTarget[]>;
+}
+
+type LinkedWorkspaceRemoteStatusEntry =
+  | {
+      kind: "workspaceFolder";
+      folder: WorkspaceFolderLike;
+      metadata: WorkspaceFolderRemoteLinkMetadata;
+    }
+  | {
+      kind: "subFolder";
+      metadata: WorkspaceSubFolderMetadata & {
+        remote: WorkspaceFolderRemoteLinkMetadata;
+      };
+    };
+
+let subFolderTargetCache: CachedSubFolderTargets | undefined;
+let pendingSubFolderTargets: PendingSubFolderTargets | undefined;
 
 async function getGitRepositories(): Promise<readonly GitRepositoryLike[]> {
   const gitExtension =
@@ -162,24 +204,12 @@ function showWorkspaceFolderQuickPick(
     quickPick.title = placeHolder;
     quickPick.placeholder = placeHolder;
     quickPick.matchOnDescription = false;
-    quickPick.matchOnDetail = false;
-    const changeDisposable = quickPick.onDidChangeValue((value) => {
-      const item = findWorkspaceFolderByMnemonic(quickPick.items, value);
-      if (!item) {
-        return;
-      }
-
-      quickPick.value = "";
-      quickPick.activeItems = [item];
-      settle(item);
-    });
-
+    quickPick.matchOnDetail = true;
     quickPick.onDidAccept(() => {
       settle(quickPick.activeItems[0]);
     });
 
     quickPick.onDidHide(() => {
-      changeDisposable.dispose();
       settle(undefined);
     });
 
@@ -192,9 +222,6 @@ function showWorkspaceFolderQuickPick(
           return;
         }
 
-        const previouslySelectedPaths = new Set(
-          quickPick.activeItems.map((item) => item.folder.uri.fsPath),
-        );
         const previousActivePath =
           quickPick.activeItems[0]?.folder.uri.fsPath;
 
@@ -268,6 +295,26 @@ function showWorkspaceFolderActionQuickPick(
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      clearCachedSubFolderTargets();
+    }),
+  );
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document.uri.fsPath === vscode.workspace.workspaceFile?.fsPath) {
+        clearCachedSubFolderTargets();
+      }
+    }),
+  );
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      if (document.uri.fsPath === vscode.workspace.workspaceFile?.fsPath) {
+        clearCachedSubFolderTargets();
+      }
+    }),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand(CREATE_WORKSPACE_COMMAND, async () => {
       await createWorkspace({
@@ -350,22 +397,35 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(COPY_WORKSPACE_FOLDER_PATHS_COMMAND, async () => {
       const workspaceFolders = vscode.workspace.workspaceFolders;
+      const workspaceFilePath = vscode.workspace.workspaceFile?.fsPath;
       const workspaceFolderLinks = await getWorkspaceFolderLinkMetadataMap(
-        vscode.workspace.workspaceFile?.fsPath,
+        workspaceFilePath,
       );
-      const folderUiStates = await getWorkspaceFolderUiStates(
-        workspaceFolders ?? [],
-      );
+      const repositories = await getGitRepositories();
+      const dirtyDocumentFolderPaths = getDirtyDocumentFolderPaths();
+      const baseBranch = getBaseBranch();
 
       await copyWorkspaceFolderPaths({
         workspaceFolders,
-        getFolderUiState: async (folder) =>
-          folderUiStates.get(folder.uri.fsPath) ?? EMPTY_FOLDER_UI_STATE,
-        inspectWorkspaceFolder: async (folder) =>
-          inspectWorkspaceFolderForPrCleanup(
-            folder,
-            workspaceFolderLinks.get(path.resolve(folder.uri.fsPath)),
+        getSubFolderTargets: async (folders) =>
+          getWorkspaceSubFolderTargets(folders, workspaceFilePath),
+        getFolderUiState: async (target) =>
+          getWorkspaceTargetUiState(
+            target,
+            repositories,
+            dirtyDocumentFolderPaths,
+            baseBranch,
           ),
+        inspectWorkspaceFolder: async (target) => {
+          if (target.kind !== "workspaceFolder") {
+            return undefined;
+          }
+
+          return inspectWorkspaceFolderForPrCleanup(
+            toWorkspaceFolderLike(target.folderName, target.fsPath),
+            workspaceFolderLinks.get(path.resolve(target.fsPath)),
+          );
+        },
         showQuickPick: (items, options) =>
           showWorkspaceFolderQuickPick(
             items,
@@ -374,15 +434,14 @@ export function activate(context: vscode.ExtensionContext): void {
           ),
         showActionQuickPick: (items, options) =>
           showWorkspaceFolderActionQuickPick(items, options.placeHolder),
-        resolveWorkspaceFolderLink: async (folder) =>
-          resolveWorkspaceFolderLink(
-            workspaceFolderLinks.get(path.resolve(folder.uri.fsPath)),
-          ),
-        linkWorkspaceFolderToGitHub: async (folder) =>
-          linkWorkspaceFolderToGitHub(
-            vscode.workspace.workspaceFile?.fsPath,
-            folder,
-          ),
+        resolveWorkspaceFolderLink: async (target) => {
+          const metadata = target.kind === "subFolder"
+            ? target.remote
+            : workspaceFolderLinks.get(path.resolve(target.fsPath));
+          return resolveWorkspaceFolderLink(metadata);
+        },
+        linkWorkspaceFolderToGitHub: async (target) =>
+          linkWorkspaceTargetToGitHub(workspaceFilePath, target),
         showInformationMessage: (message) =>
           vscode.window.showInformationMessage(message),
         showWarningMessage: (message) =>
@@ -411,7 +470,7 @@ export function activate(context: vscode.ExtensionContext): void {
         rebaseOntoBaseBranch: async (folderPath) => {
           await rebaseOntoBaseBranch(folderPath);
         },
-        workspaceFilePath: vscode.workspace.workspaceFile?.fsPath,
+        workspaceFilePath,
         confirmRemoval: async (message) => {
           const removeLabel = "Remove";
           const picked = await vscode.window.showWarningMessage(
@@ -448,22 +507,42 @@ export function activate(context: vscode.ExtensionContext): void {
         if (workspaceFilePath) {
           const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
           const metadataMap = await getWorkspaceFolderLinkMetadataMap(workspaceFilePath);
+          const subFolderMetadataMap =
+            await getWorkspaceSubFolderMetadataMap(workspaceFilePath);
           const linkedFolders = workspaceFolders
             .map((folder) => ({
+              kind: "workspaceFolder" as const,
               folder,
               metadata: metadataMap.get(path.resolve(folder.uri.fsPath)),
             }))
             .filter(
               (entry): entry is {
+                kind: "workspaceFolder";
                 folder: vscode.WorkspaceFolder;
                 metadata: WorkspaceFolderRemoteLinkMetadata;
               } => entry.metadata !== undefined,
             );
+          const linkedSubFolders = [...subFolderMetadataMap.values()]
+            .filter(
+              (
+                metadata,
+              ): metadata is WorkspaceSubFolderMetadata & {
+                remote: WorkspaceFolderRemoteLinkMetadata;
+              } => metadata.remote !== undefined,
+            )
+            .map((metadata) => ({
+              kind: "subFolder" as const,
+              metadata,
+            }));
+          const linkedEntries: LinkedWorkspaceRemoteStatusEntry[] = [
+            ...linkedFolders,
+            ...linkedSubFolders,
+          ];
 
-          if (linkedFolders.length > 0) {
+          if (linkedEntries.length > 0) {
             refreshedRemoteStatuses = await refreshWorkspaceFolderRemoteStatuses(
               workspaceFilePath,
-              linkedFolders,
+              linkedEntries,
             );
           } else {
             refreshedRemoteStatuses = 0;
@@ -493,6 +572,15 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+
+function toWorkspaceFolderLike(name: string, fsPath: string): WorkspaceFolderLike {
+  return {
+    name,
+    uri: {
+      fsPath,
+    },
+  };
+}
 
 async function resolveWorkspaceFolderLink(
   metadata: WorkspaceFolderRemoteLinkMetadata | undefined,
@@ -667,23 +755,98 @@ async function getWorkspaceFolderLinkMetadataMap(
   );
 }
 
+async function getWorkspaceSubFolderMetadataMap(
+  workspaceFilePath: string | undefined,
+): Promise<Map<string, WorkspaceSubFolderMetadata>> {
+  if (!workspaceFilePath) {
+    return new Map();
+  }
+
+  const workspaceFileUri = vscode.Uri.file(workspaceFilePath);
+  const document = await vscode.workspace.openTextDocument(workspaceFileUri);
+  return getWorkspaceSubFolderMetadataByPath(
+    document.getText(),
+    workspaceFilePath,
+  );
+}
+
+async function getWorkspaceSubFolderTargets(
+  workspaceFolders: readonly WorkspaceFolderLike[],
+  workspaceFilePath: string | undefined,
+): Promise<readonly WorkspaceSubFolderActionTarget[]> {
+  const metadataMap = await getWorkspaceSubFolderMetadataMap(workspaceFilePath);
+  const cacheKey = toSubFolderTargetCacheKey(workspaceFolders, metadataMap);
+  if (
+    subFolderTargetCache &&
+    subFolderTargetCache.key === cacheKey &&
+    subFolderTargetCache.expiresAt > Date.now()
+  ) {
+    return subFolderTargetCache.value;
+  }
+
+  if (pendingSubFolderTargets?.key === cacheKey) {
+    return pendingSubFolderTargets.promise;
+  }
+
+  const promise = buildWorkspaceSubFolderTargets(
+    workspaceFolders,
+    metadataMap,
+    NODE_FILE_SYSTEM,
+  )
+    .then((targets) => {
+      subFolderTargetCache = {
+        key: cacheKey,
+        value: targets,
+        expiresAt: Date.now() + SUB_FOLDER_TARGET_CACHE_TTL_MS,
+      };
+      return targets;
+    })
+    .finally(() => {
+      if (pendingSubFolderTargets?.key === cacheKey) {
+        pendingSubFolderTargets = undefined;
+      }
+    });
+
+  pendingSubFolderTargets = {
+    key: cacheKey,
+    promise,
+  };
+
+  return promise;
+}
+
+function toSubFolderTargetCacheKey(
+  workspaceFolders: readonly WorkspaceFolderLike[],
+  metadataMap: ReadonlyMap<string, WorkspaceSubFolderMetadata>,
+): string {
+  return JSON.stringify({
+    folders: workspaceFolders.map((folder) => path.resolve(folder.uri.fsPath)),
+    subFolders: [...metadataMap.values()].map((metadata) => ({
+      workspaceFolderPath: path.resolve(metadata.workspaceFolderPath),
+      relativePath: metadata.relativePath,
+      remoteUrl: metadata.remote?.url,
+      remoteStatus: metadata.remote?.status,
+      fetchedAt: metadata.remote?.fetchedAt,
+    })),
+  });
+}
+
 async function refreshWorkspaceFolderRemoteStatuses(
   workspaceFilePath: string,
-  linkedFolders: readonly {
-    folder: WorkspaceFolderLike;
-    metadata: WorkspaceFolderRemoteLinkMetadata;
-  }[],
+  linkedEntries: readonly LinkedWorkspaceRemoteStatusEntry[],
 ): Promise<number> {
   const workspaceFileUri = vscode.Uri.file(workspaceFilePath);
   const document = await vscode.workspace.openTextDocument(workspaceFileUri);
   const originalContent = document.getText();
   let nextContent = originalContent;
   const refreshedEntries = await runSettledWithConcurrency(
-    linkedFolders,
+    linkedEntries,
     REFRESH_STATUS_CONCURRENCY,
-    async ({ folder, metadata }) => ({
-      folder,
-      metadata: await refreshWorkspaceFolderRemoteLinkMetadata(metadata),
+    async (entry) => ({
+      entry,
+      metadata: await refreshWorkspaceFolderRemoteLinkMetadata(
+        entry.kind === "workspaceFolder" ? entry.metadata : entry.metadata.remote,
+      ),
     }),
   );
   const failedEntry = refreshedEntries.find(
@@ -695,21 +858,34 @@ async function refreshWorkspaceFolderRemoteStatuses(
   }
 
   for (const entry of refreshedEntries.filter(isSuccessfulConcurrencyResult)) {
-    const { folder, metadata } = entry.value;
-    const updated = addAbsoluteFolderToWorkspaceFileContent(
-      nextContent,
-      workspaceFilePath,
-      folder.uri.fsPath,
-      metadata,
-    );
+    const { entry: linkedEntry, metadata } = entry.value;
+    const updated = linkedEntry.kind === "workspaceFolder"
+      ? addAbsoluteFolderToWorkspaceFileContent(
+          nextContent,
+          workspaceFilePath,
+          linkedEntry.folder.uri.fsPath,
+          metadata,
+        )
+      : upsertWorkspaceSubFolderRemoteMetadataContent(
+          nextContent,
+          workspaceFilePath,
+          linkedEntry.metadata.workspaceFolderPath,
+          linkedEntry.metadata.fsPath,
+          metadata,
+        );
     nextContent = updated.content;
-    clearCachedPrWorktreeInspection(folder.uri.fsPath);
+    clearCachedPrWorktreeInspection(
+      linkedEntry.kind === "workspaceFolder"
+        ? linkedEntry.folder.uri.fsPath
+        : linkedEntry.metadata.fsPath,
+    );
   }
 
   if (nextContent !== originalContent) {
     await saveWorkspaceFileDocument(document, nextContent);
   }
 
+  clearCachedSubFolderTargets();
   return refreshedEntries.length;
 }
 
@@ -774,6 +950,53 @@ async function linkWorkspaceFolderToGitHub(
   }
 }
 
+async function linkWorkspaceTargetToGitHub(
+  workspaceFilePath: string | undefined,
+  target: WorkspaceActionTarget,
+): Promise<void> {
+  if (target.kind === "workspaceFolder") {
+    await linkWorkspaceFolderToGitHub(
+      workspaceFilePath,
+      toWorkspaceFolderLike(target.folderName, target.fsPath),
+    );
+    return;
+  }
+
+  await linkWorkspaceSubFolderToGitHub(workspaceFilePath, target);
+}
+
+async function linkWorkspaceSubFolderToGitHub(
+  workspaceFilePath: string | undefined,
+  target: WorkspaceSubFolderActionTarget,
+): Promise<void> {
+  if (!workspaceFilePath) {
+    await vscode.window.showInformationMessage(
+      "The current window must use a saved .code-workspace file.",
+    );
+    return;
+  }
+
+  const metadata = await promptForGitHubLinkMetadata(
+    `Enter a GitHub issue or pull request URL for ${target.label}`,
+  );
+  if (!metadata) {
+    return;
+  }
+
+  try {
+    await upsertWorkspaceSubFolderRemoteLinkMetadata(
+      workspaceFilePath,
+      target,
+      metadata,
+    );
+    await vscode.window.showInformationMessage(
+      `Linked workspace subfolder to GitHub: ${target.label}`,
+    );
+  } catch (error) {
+    await vscode.window.showErrorMessage(toExtensionErrorMessage(error));
+  }
+}
+
 async function promptForGitHubLinkMetadata(
   prompt: string,
 ): Promise<WorkspaceFolderRemoteLinkMetadata | undefined> {
@@ -822,6 +1045,37 @@ async function upsertWorkspaceFolderRemoteLinkMetadata(
     refreshedMetadata,
   );
   clearCachedPrWorktreeInspection(folder.uri.fsPath);
+}
+
+async function upsertWorkspaceSubFolderRemoteLinkMetadata(
+  workspaceFilePath: string,
+  target: WorkspaceSubFolderActionTarget,
+  metadata: WorkspaceFolderRemoteLinkMetadata,
+): Promise<void> {
+  const refreshedMetadata = await refreshWorkspaceFolderRemoteLinkMetadata(
+    metadata,
+  );
+  if (refreshedMetadata.kind === "pr" && fs.existsSync(target.fsPath)) {
+    await configureExistingPullRequestTracking(target.fsPath, refreshedMetadata);
+  }
+
+  const workspaceFileUri = vscode.Uri.file(workspaceFilePath);
+  const document = await vscode.workspace.openTextDocument(workspaceFileUri);
+  const originalContent = document.getText();
+  const updated = upsertWorkspaceSubFolderRemoteMetadataContent(
+    originalContent,
+    workspaceFilePath,
+    target.workspaceFolderPath,
+    target.fsPath,
+    refreshedMetadata,
+  );
+
+  if (updated.content !== originalContent) {
+    await saveWorkspaceFileDocument(document, updated.content);
+  }
+
+  clearCachedPrWorktreeInspection(target.fsPath);
+  clearCachedSubFolderTargets();
 }
 
 async function createWorkspaceFolderFromUrl(
@@ -1571,26 +1825,32 @@ function toExtensionErrorMessage(error: unknown): string {
   return "Workspace Actions failed.";
 }
 
-async function getWorkspaceFolderUiStates(
-  workspaceFolders: readonly vscode.WorkspaceFolder[],
-): Promise<Map<string, ReturnType<typeof toFolderUiState>>> {
-  const baseBranch = getBaseBranch();
+async function getWorkspaceTargetUiState(
+  target: WorkspaceActionTarget,
+  repositories: readonly GitRepositoryLike[],
+  dirtyDocumentFolderPaths: readonly string[],
+  baseBranch: string,
+): Promise<ReturnType<typeof toFolderUiState>> {
+  if (target.kind === "subFolder" && !target.isActionable) {
+    return EMPTY_FOLDER_UI_STATE;
+  }
+
+  const folder = toWorkspaceFolderLike(target.folderName, target.fsPath);
   const folderSummaries = await buildFolderStatusSummaries(
-    workspaceFolders,
-    await getGitRepositories(),
-    getDirtyDocumentFolderPaths(),
+    [folder],
+    repositories,
+    dirtyDocumentFolderPaths,
     baseBranch,
   );
+  const summary = folderSummaries.get(target.fsPath);
+  if (!summary) {
+    return EMPTY_FOLDER_UI_STATE;
+  }
 
-  return new Map(
-    [...folderSummaries.entries()].map(([folderPath, summary]) => [
-      folderPath,
-      {
-        ...toFolderUiState(summary),
-        isGitWorktree: isLinkedGitWorktree(folderPath),
-      },
-    ]),
-  );
+  return {
+    ...toFolderUiState(summary),
+    isGitWorktree: isLinkedGitWorktree(target.fsPath),
+  };
 }
 
 function isLinkedGitWorktree(folderPath: string): boolean {
@@ -1599,4 +1859,9 @@ function isLinkedGitWorktree(folderPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function clearCachedSubFolderTargets(): void {
+  subFolderTargetCache = undefined;
+  pendingSubFolderTargets = undefined;
 }
