@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.8 - 2026-05-16
 
 - Show nested Git repositories under their parent workspace folders in the
   Workspace Folder Actions picker, with indentation and parent-adjacent
