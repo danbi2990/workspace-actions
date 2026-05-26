@@ -329,7 +329,7 @@ test("toQuickPickItems shows nested subfolder labels", () => {
 
   const items = toQuickPickItems([target], new Map());
 
-  assert.equal(items[0]?.label, "      home/workspace-actions");
+  assert.equal(items[0]?.label, "      workspace-actions");
   assert.equal(items[0]?.target, target);
   assert.deepEqual(items[0]?.folder, {
     name: "workspace-actions",
@@ -337,6 +337,30 @@ test("toQuickPickItems shows nested subfolder labels", () => {
       fsPath: "/workspace/home/workspace-actions",
     },
   });
+});
+
+test("toQuickPickItems appends status icons to nested subfolder labels", () => {
+  const target = createSubFolderTarget();
+  const states = new Map<string, FolderUiState>([
+    [
+      target.fsPath,
+      {
+        isGitWorktree: true,
+        hasGitChanges: true,
+        hasRemoteBranchTracking: true,
+        remoteBranchMoved: true,
+        baseBranchMoved: false,
+        dirtyEditors: 0,
+      },
+    ],
+  ]);
+
+  const items = toQuickPickItems([target], states);
+
+  assert.equal(
+    items[0]?.label,
+    "      workspace-actions   $(cloud-download) $(diff-modified)",
+  );
 });
 
 test("toQuickPickItems adds absolute path detail for duplicate labels", () => {
@@ -348,7 +372,7 @@ test("toQuickPickItems adds absolute path detail for duplicate labels", () => {
   const second = createSubFolderTarget({
     fsPath: "/other/home/apps/api",
     workspaceFolderPath: "/other/home",
-    label: "home/apps/api",
+    label: "other/apps/api",
     relativePath: "apps/api",
   });
 
@@ -927,7 +951,7 @@ test("copyWorkspaceFolderPaths includes nested subfolder targets in the picker",
     "home",
     "dotfiles",
     "home",
-    "      home/workspace-actions",
+    "      workspace-actions",
     "dotfiles",
   ]);
   assert.deepEqual(terminalWrites, ["/workspace/home/workspace-actions"]);

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Simplify nested workspace folder labels in the Workspace Folder Actions picker
+  by relying on indentation for the parent-child relationship and showing only
+  the nested folder's relative path.
+
 ## 0.0.8 - 2026-05-16
 
 - Show nested Git repositories under their parent workspace folders in the

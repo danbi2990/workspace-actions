@@ -353,10 +353,11 @@ export function toQuickPickItems(
       cleanupCandidates.get(target.fsPath),
       linkTargets.has(target.fsPath),
     );
+    const displayBaseLabel = toDisplayWorkspaceFolderBaseLabel(target);
 
     return {
       label: toDisplayWorkspaceFolderLabel(target, baseLabel),
-      detail: duplicatedLabels.has(target.label) ? target.fsPath : undefined,
+      detail: duplicatedLabels.has(displayBaseLabel) ? target.fsPath : undefined,
       target,
       folder,
       folderState: folderStates.get(target.fsPath),
@@ -974,12 +975,22 @@ function toDisplayWorkspaceFolderLabel(
     : baseLabel;
 }
 
+function toDisplayWorkspaceFolderBaseLabel(
+  target: WorkspaceActionTarget,
+): string {
+  return toDisplayWorkspaceFolderLabel(
+    target,
+    toWorkspaceFolderBaseLabel(target),
+  );
+}
+
 function toDuplicatedTargetLabels(
   targets: readonly WorkspaceActionTarget[],
 ): Set<string> {
   const labelCounts = new Map<string, number>();
   for (const target of targets) {
-    labelCounts.set(target.label, (labelCounts.get(target.label) ?? 0) + 1);
+    const label = toDisplayWorkspaceFolderBaseLabel(target);
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
   }
 
   return new Set(
@@ -1045,12 +1056,17 @@ function toWorkspaceFolderLabel(
   cleanupCandidate: WorkspaceCleanupCandidate | undefined,
   hasRemoteLink: boolean,
 ): string {
+  const label = toWorkspaceFolderBaseLabel(target);
   const icons = getWorkspaceFolderIcons(state, cleanupCandidate, hasRemoteLink);
   if (icons.length === 0) {
-    return target.label;
+    return label;
   }
 
-  return `${target.label}${STATUS_ICON_SEPARATOR}${icons.join(" ")}`;
+  return `${label}${STATUS_ICON_SEPARATOR}${icons.join(" ")}`;
+}
+
+function toWorkspaceFolderBaseLabel(target: WorkspaceActionTarget): string {
+  return target.kind === "subFolder" ? target.relativePath : target.label;
 }
 
 function getWorkspaceFolderIcons(
