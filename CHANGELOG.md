@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.9 - 2026-05-28
 
 - Simplify nested workspace folder labels in the Workspace Folder Actions picker
   by relying on indentation for the parent-child relationship and showing only
