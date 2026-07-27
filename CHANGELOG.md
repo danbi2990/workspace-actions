@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.10 - 2026-07-27
 
 - Set the window title of newly created workspaces to the workspace name.
 - Preserve surrounding JSONC comments when updating folders and metadata in
