@@ -75,6 +75,9 @@ and lets you either:
 The selected folder is added to the current `.code-workspace` file using an
 absolute path.
 
+Workspace file updates preserve existing JSONC comments. Comments inside a
+folder entry are removed only when that folder entry itself is removed.
+
 ### Workspace Actions: Add Local Worktree from GitHub Issue or PR URL
 
 Accepts a GitHub issue or pull request URL, creates a local worktree, and adds

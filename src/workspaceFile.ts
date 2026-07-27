@@ -1,5 +1,17 @@
 import * as path from "node:path";
-import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
+import {
+  applyEdits,
+  createScanner,
+  findNodeAtLocation,
+  modify,
+  parse,
+  parseTree,
+  SyntaxKind,
+  type Edit,
+  type JSONPath,
+  type Node,
+  type ParseError,
+} from "jsonc-parser";
 import type { WorkspaceFolderRemoteLinkMetadata } from "./prCleanup";
 
 export type UpdateWorkspaceFileResult = "added" | "updated" | "alreadyExists";
@@ -38,6 +50,12 @@ export interface WorkspaceSubFolderMetadata {
   fsPath: string;
   remote?: WorkspaceFolderRemoteLinkMetadata;
 }
+
+const WORKSPACE_FILE_FORMATTING_OPTIONS = {
+  insertSpaces: true,
+  tabSize: 2,
+  eol: "\n",
+};
 
 export function addAbsoluteFolderToWorkspaceFileContent(
   content: string,
@@ -94,16 +112,13 @@ export function addAbsoluteFolderToWorkspaceFileContent(
     };
   }
 
-  const edits = modify(content, ["folders"], nextFolders, {
-    formattingOptions: {
-      insertSpaces: true,
-      tabSize: 2,
-      eol: "\n",
-    },
-  });
-
   return {
-    content: applyEdits(content, edits),
+    content: updateJsonValueAtPath(
+      content,
+      ["folders"],
+      parsed.folders,
+      nextFolders,
+    ),
     result: matchedEntry ? "updated" : "added",
   };
 }
@@ -118,42 +133,41 @@ export function removeFolderFromWorkspaceFileContent(
   const normalizedFolderPath = path.resolve(folderPath);
   const currentFolders = getWorkspaceFolderEntries(parsed);
 
-  let removed = false;
-  const nextFolders = currentFolders.filter((entry) => {
+  const removalIndexes: number[] = [];
+  currentFolders.forEach((entry, index) => {
     const resolvedEntry = resolveWorkspaceFolderEntry(
       entry,
       workspaceFileDir,
     );
 
     if (!resolvedEntry) {
-      return true;
+      return;
     }
 
     if (resolvedEntry.normalizedPath !== normalizedFolderPath) {
-      return true;
+      return;
     }
 
-    removed = true;
-    return false;
+    removalIndexes.push(index);
   });
 
-  if (!removed) {
+  if (removalIndexes.length === 0) {
     return {
       content,
       removed: false,
     };
   }
 
-  const edits = modify(content, ["folders"], nextFolders, {
-    formattingOptions: {
-      insertSpaces: true,
-      tabSize: 2,
-      eol: "\n",
-    },
-  });
+  let nextContent = content;
+  for (const index of removalIndexes.reverse()) {
+    nextContent = removeJsonValuePreservingComments(
+      nextContent,
+      ["folders", index],
+    );
+  }
 
   return {
-    content: applyEdits(content, edits),
+    content: nextContent,
     removed: true,
   };
 }
@@ -291,16 +305,13 @@ export function upsertWorkspaceSubFolderRemoteMetadataContent(
     };
   }
 
-  const edits = modify(content, ["folders"], nextFolders, {
-    formattingOptions: {
-      insertSpaces: true,
-      tabSize: 2,
-      eol: "\n",
-    },
-  });
-
   return {
-    content: applyEdits(content, edits),
+    content: updateJsonValueAtPath(
+      content,
+      ["folders"],
+      parsed.folders,
+      nextFolders,
+    ),
     result: matchedSubFolder ? "updated" : "added",
   };
 }
@@ -323,6 +334,295 @@ function getWorkspaceFolderEntries(parsed: Record<string, unknown>): unknown[] {
   return Array.isArray(parsed.folders)
     ? [...parsed.folders]
     : [];
+}
+
+function updateJsonValueAtPath(
+  content: string,
+  jsonPath: JSONPath,
+  currentValue: unknown,
+  nextValue: unknown,
+): string {
+  if (currentValue === nextValue) {
+    return content;
+  }
+
+  if (Array.isArray(currentValue) && Array.isArray(nextValue)) {
+    let nextContent = content;
+    const sharedLength = Math.min(currentValue.length, nextValue.length);
+
+    for (let index = 0; index < sharedLength; index += 1) {
+      nextContent = updateJsonValueAtPath(
+        nextContent,
+        [...jsonPath, index],
+        currentValue[index],
+        nextValue[index],
+      );
+    }
+
+    for (let index = currentValue.length - 1; index >= nextValue.length; index -= 1) {
+      nextContent = removeJsonValuePreservingComments(
+        nextContent,
+        [...jsonPath, index],
+      );
+    }
+
+    for (let index = currentValue.length; index < nextValue.length; index += 1) {
+      nextContent = applyJsonModification(
+        nextContent,
+        [...jsonPath, -1],
+        nextValue[index],
+      );
+    }
+
+    return nextContent;
+  }
+
+  if (isJsonObject(currentValue) && isJsonObject(nextValue)) {
+    let nextContent = content;
+
+    for (const key of Object.keys(currentValue)) {
+      if (Object.hasOwn(nextValue, key)) {
+        continue;
+      }
+
+      nextContent = removeJsonValuePreservingComments(
+        nextContent,
+        [...jsonPath, key],
+      );
+    }
+
+    for (const key of Object.keys(nextValue)) {
+      nextContent = updateJsonValueAtPath(
+        nextContent,
+        [...jsonPath, key],
+        currentValue[key],
+        nextValue[key],
+      );
+    }
+
+    return nextContent;
+  }
+
+  if (nextValue === undefined) {
+    return removeJsonValuePreservingComments(content, jsonPath);
+  }
+
+  return applyJsonModification(content, jsonPath, nextValue);
+}
+
+function applyJsonModification(
+  content: string,
+  jsonPath: JSONPath,
+  value: unknown,
+): string {
+  return applyEdits(
+    content,
+    modify(content, jsonPath, value, {
+      formattingOptions: WORKSPACE_FILE_FORMATTING_OPTIONS,
+    }),
+  );
+}
+
+function removeJsonValuePreservingComments(
+  content: string,
+  jsonPath: JSONPath,
+): string {
+  const root = parseWorkspaceFileTree(content);
+  const valueNode = findNodeAtLocation(root, jsonPath);
+  if (!valueNode) {
+    return content;
+  }
+
+  const targetNode = valueNode.parent?.type === "property"
+    ? valueNode.parent
+    : valueNode;
+  const containerNode = targetNode.parent;
+  if (
+    !containerNode ||
+    (containerNode.type !== "array" && containerNode.type !== "object")
+  ) {
+    throw new Error("Workspace file value could not be removed.");
+  }
+
+  const siblings = containerNode.children ?? [];
+  const targetIndex = siblings.indexOf(targetNode);
+  if (targetIndex < 0) {
+    throw new Error("Workspace file value could not be removed.");
+  }
+
+  const preservedTargetComments = targetNode.type === "property"
+    ? getCommentsInRange(
+        content,
+        targetNode.offset,
+        targetNode.offset + targetNode.length,
+      )
+    : [];
+  if (
+    siblings.length === 1 &&
+    preservedTargetComments.length === 0 &&
+    !hasCommentOutsideNode(content, containerNode, targetNode)
+  ) {
+    return applyEdits(content, [
+      {
+        offset: containerNode.offset + 1,
+        length: containerNode.length - 2,
+        content: "",
+      },
+    ]);
+  }
+
+  const edits: Edit[] = [
+    {
+      offset: targetNode.offset,
+      length: targetNode.length,
+      content: toPreservedCommentContent(
+        content,
+        targetNode.offset,
+        preservedTargetComments,
+      ),
+    },
+  ];
+  const containerEndOffset = containerNode.offset + containerNode.length - 1;
+  const commaAfter = findCommaOffset(
+    content,
+    targetNode.offset + targetNode.length,
+    containerEndOffset,
+  );
+
+  if (commaAfter !== undefined) {
+    edits.push({
+      offset: commaAfter,
+      length: 1,
+      content: "",
+    });
+  } else if (targetIndex > 0) {
+    const previousNode = siblings[targetIndex - 1];
+    const commaBefore = findCommaOffset(
+      content,
+      previousNode.offset + previousNode.length,
+      targetNode.offset,
+    );
+    if (commaBefore === undefined) {
+      throw new Error("Workspace file separator could not be removed.");
+    }
+
+    edits.push({
+      offset: commaBefore,
+      length: 1,
+      content: "",
+    });
+  }
+
+  return applyEdits(content, edits);
+}
+
+function parseWorkspaceFileTree(content: string): Node {
+  const errors: ParseError[] = [];
+  const root = parseTree(content, errors, {
+    allowTrailingComma: true,
+    disallowComments: false,
+  });
+
+  if (errors.length > 0 || !root) {
+    throw new Error("Workspace file could not be parsed.");
+  }
+
+  return root;
+}
+
+function hasCommentOutsideNode(
+  content: string,
+  containerNode: Node,
+  targetNode: Node,
+): boolean {
+  const containerStartOffset = containerNode.offset + 1;
+  const containerEndOffset = containerNode.offset + containerNode.length - 1;
+
+  return (
+    hasCommentInRange(content, containerStartOffset, targetNode.offset) ||
+    hasCommentInRange(
+      content,
+      targetNode.offset + targetNode.length,
+      containerEndOffset,
+    )
+  );
+}
+
+function hasCommentInRange(
+  content: string,
+  startOffset: number,
+  endOffset: number,
+): boolean {
+  return getCommentsInRange(content, startOffset, endOffset).length > 0;
+}
+
+function getCommentsInRange(
+  content: string,
+  startOffset: number,
+  endOffset: number,
+): string[] {
+  const scanner = createScanner(content, false);
+  scanner.setPosition(startOffset);
+  const comments: string[] = [];
+
+  for (let token = scanner.scan(); token !== SyntaxKind.EOF; token = scanner.scan()) {
+    const tokenOffset = scanner.getTokenOffset();
+    if (tokenOffset >= endOffset) {
+      break;
+    }
+
+    if (
+      token === SyntaxKind.LineCommentTrivia ||
+      token === SyntaxKind.BlockCommentTrivia
+    ) {
+      comments.push(
+        content.slice(tokenOffset, tokenOffset + scanner.getTokenLength()),
+      );
+    }
+  }
+
+  return comments;
+}
+
+function toPreservedCommentContent(
+  content: string,
+  targetOffset: number,
+  comments: readonly string[],
+): string {
+  if (comments.length === 0) {
+    return "";
+  }
+
+  const lineStartOffset = content.lastIndexOf("\n", targetOffset - 1) + 1;
+  const linePrefix = content.slice(lineStartOffset, targetOffset);
+  const indentation = linePrefix.match(/[ \t]*$/)?.[0] ?? "";
+  return `${comments.join(`\n${indentation}`)}\n${indentation}`;
+}
+
+function findCommaOffset(
+  content: string,
+  startOffset: number,
+  endOffset: number,
+): number | undefined {
+  const scanner = createScanner(content, false);
+  scanner.setPosition(startOffset);
+
+  for (let token = scanner.scan(); token !== SyntaxKind.EOF; token = scanner.scan()) {
+    const tokenOffset = scanner.getTokenOffset();
+    if (tokenOffset >= endOffset) {
+      return undefined;
+    }
+
+    if (token === SyntaxKind.CommaToken) {
+      return tokenOffset;
+    }
+  }
+
+  return undefined;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function resolveWorkspaceFolderEntry(
