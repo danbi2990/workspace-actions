@@ -801,7 +801,10 @@ export async function createWorkspace(
     }
 
     await deps.createDirectory(workspaceFolderPath);
-    await deps.writeFile(workspaceFilePath, toNewWorkspaceFileContent());
+    await deps.writeFile(
+      workspaceFilePath,
+      toNewWorkspaceFileContent(workspaceName),
+    );
     void deps.showInformationMessage(
       `Created workspace: ${workspaceFilePath}`,
     );
@@ -1362,7 +1365,7 @@ async function promptForWorkspaceName(
   return workspaceName;
 }
 
-export function toNewWorkspaceFileContent(): string {
+export function toNewWorkspaceFileContent(workspaceName: string): string {
   return `${JSON.stringify(
     {
       folders: [
@@ -1370,7 +1373,9 @@ export function toNewWorkspaceFileContent(): string {
           path: ".",
         },
       ],
-      settings: {},
+      settings: {
+        "window.title": workspaceName,
+      },
     },
     undefined,
     2,

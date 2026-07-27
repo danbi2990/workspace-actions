@@ -45,7 +45,7 @@ the workspace. It then asks for a workspace name and creates:
 ```
 
 The created workspace file includes its containing folder as the first
-workspace folder:
+workspace folder and uses the workspace name as the window title:
 
 ```json
 {
@@ -54,7 +54,9 @@ workspace folder:
       "path": "."
     }
   ],
-  "settings": {}
+  "settings": {
+    "window.title": "<workspace-name>"
+  }
 }
 ```
 

@@ -2021,16 +2021,18 @@ test("addWorkspaceFolder warns when new folder name input is blank", async () =>
   assert.deepEqual(createdFolders, []);
 });
 
-test("toNewWorkspaceFileContent includes the containing folder", () => {
+test("toNewWorkspaceFileContent includes the containing folder and window title", () => {
   assert.equal(
-    toNewWorkspaceFileContent(),
+    toNewWorkspaceFileContent("new-home"),
     `{
   "folders": [
     {
       "path": "."
     }
   ],
-  "settings": {}
+  "settings": {
+    "window.title": "new-home"
+  }
 }
 `,
   );
@@ -2070,7 +2072,7 @@ test("createWorkspace shows an error when the configured root does not exist", a
   ]);
 });
 
-test("createWorkspace creates and opens a workspace with itself as a folder", async () => {
+test("createWorkspace trims the name before creating and opening the workspace", async () => {
   const createdFolders: string[] = [];
   const writtenFiles: Array<{ fsPath: string; content: string }> = [];
   const openedWorkspaces: string[] = [];
@@ -2080,7 +2082,7 @@ test("createWorkspace creates and opens a workspace with itself as a folder", as
     showRootQuickPick: async () => {
       throw new Error("should not be called");
     },
-    showInputBox: async () => "new-home",
+    showInputBox: async () => "  new-home  ",
     createDirectory: async (fsPath) => {
       createdFolders.push(fsPath);
     },
@@ -2097,12 +2099,21 @@ test("createWorkspace creates and opens a workspace with itself as a folder", as
   }));
 
   assert.deepEqual(createdFolders, ["/workspaces/new-home"]);
-  assert.deepEqual(writtenFiles, [
-    {
-      fsPath: "/workspaces/new-home/new-home.code-workspace",
-      content: toNewWorkspaceFileContent(),
+  assert.equal(writtenFiles.length, 1);
+  assert.equal(
+    writtenFiles[0]?.fsPath,
+    "/workspaces/new-home/new-home.code-workspace",
+  );
+  assert.deepEqual(JSON.parse(writtenFiles[0]?.content ?? ""), {
+    folders: [
+      {
+        path: ".",
+      },
+    ],
+    settings: {
+      "window.title": "new-home",
     },
-  ]);
+  });
   assert.deepEqual(infoMessages, [
     "Created workspace: /workspaces/new-home/new-home.code-workspace",
   ]);

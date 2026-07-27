@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Set the window title of newly created workspaces to the workspace name.
+
 ## 0.0.9 - 2026-05-28
 
 - Simplify nested workspace folder labels in the Workspace Folder Actions picker
