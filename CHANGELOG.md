@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.11 - 2026-07-28
 
 - Clarify worktree removal prompts and documentation, including dirty-worktree
   protection and the best-effort local branch deletion with `git branch -d`.
