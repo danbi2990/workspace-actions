@@ -1,5 +1,9 @@
 # Nested Git Subfolders Plan
 
+> Historical implementation plan. The feature shipped in 0.0.8, and 0.0.9
+> replaced the `parent/subfolder` picker labels below with indented relative
+> paths. The open questions record the original design process.
+
 ## Goal
 
 Show git repositories that live under a workspace folder in the Workspace

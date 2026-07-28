@@ -10,12 +10,15 @@ It helps you:
 - create a new folder and add it to the workspace in one flow
 - create a local worktree from a GitHub issue or pull request URL and add it
   to the current workspace
+- discover nested Git repositories and run safe actions without adding them as
+  workspace folders
 - open a folder action menu to send paths to the terminal, copy paths, reveal
   folders, open saved links, pull updates, or remove folders
 - refresh saved PR or issue status together with base-branch fetch state
 
 ## Requirements
 
+- VS Code 1.105 or newer.
 - `git` must be available on your PATH for worktree, fetch, pull, and rebase
   actions.
 - GitHub-related actions require the GitHub CLI (`gh`) to be available on your
@@ -26,7 +29,8 @@ It helps you:
 1. Set `workspaceActions.workspaceRoots` to the root folders where new
    workspaces should be created.
 2. Set `workspaceActions.workspaceFolderRoots` to the root folders you want to
-   browse when adding workspace folders.
+   browse when adding workspace folders and where local repositories can be
+   found when creating worktrees from GitHub URLs.
 3. Optionally set `workspaceActions.baseBranch` if your default base branch is
    not `main`.
 4. Run one of the commands below from the Command Palette.
@@ -92,76 +96,108 @@ That metadata includes:
 For pull requests, the created local branch also tracks the PR head branch so
 upstream updates can be detected and pulled cleanly.
 
-The same `workspaceActions.workspaceFolderRoots` setting is also used later
-when linked worktree actions need to find the local base repository on disk.
+The same `workspaceActions.workspaceFolderRoots` setting lets this command find
+the existing local repository from which it creates the worktree.
 
 This flow is opinionated and works best in setups where your local repositories
 and worktrees live under predictable root folders.
 
 ### Workspace Actions: Workspace Folder Actions
 
-Always starts with a workspace-folder picker, even when only one workspace
-folder is open. After you choose a folder, it opens an action picker for that
-folder.
+Always starts with a target picker, even when only one workspace folder is open.
+The picker lists top-level workspace folders and automatically discovers nested
+Git repositories up to two directory levels below them. Nested repositories
+appear directly below their parent as indented relative paths.
 
-Both pickers support single-key mnemonics for fast keyboard navigation.
+Saved nested entries that are missing or fail path validation may still appear,
+but only metadata-safe actions are available. After you choose a target, the
+extension opens its action picker.
+
+The target picker uses normal text search. The action picker supports the
+single-key mnemonics shown in square brackets.
+
+The default shortcut is `Cmd+Ctrl+L` on macOS and `Ctrl+Alt+L` on Windows and
+Linux.
 
 Available actions:
 - `[T] Send to Terminal`
+  Available for top-level folders and valid nested repositories.
 - `[C] Copy Paths`
+  Available for every picker entry.
 - `[O] Open PR Or Issue Links`
+  Available for top-level folders and nested entries with saved remote
+  metadata.
 - `[L] Link to GitHub`
-  Available for a single workspace folder in a saved workspace file.
+  Available for a single top-level folder or valid nested repository in a saved
+  workspace file.
 - `[P] Pull Remote Branch`
+  Available when the selected target's current branch tracks an upstream.
 - `[B] Pull Base Repository`
-  Available for linked Git worktrees.
+  Available for top-level Git worktrees only.
 - `[M] Rebase onto Base Branch`
-  Available when the current branch is behind the configured base branch.
+  Available when a valid target's current branch is behind the configured base
+  branch.
 - `[R] Reveal in Explorer`
-  Available for a single existing folder.
+  Available for a single existing, valid target.
 - `[D] Remove From Workspace`
-  Always removes the selected folder from the workspace. If the folder is a
-  linked Git worktree, it removes the worktree too.
+  Available for top-level workspace folders only, never nested repositories.
 
-`Send to Terminal` and `Copy Paths` always use absolute workspace-folder paths.
+`Remove From Workspace` always asks for confirmation. A regular folder or
+missing entry is removed only from the workspace; existing folder contents
+remain on disk. A Git worktree with uncommitted changes is not removed. After
+confirmation, Workspace Actions removes a clean worktree directory, attempts to
+delete its checked-out local branch with `git branch -d`, and then removes the
+workspace entry. If Git rejects the branch deletion, the extension reports a
+warning.
+
+`Send to Terminal` and `Copy Paths` always use the selected target's absolute
+path.
 
 ### Workspace Actions: Refresh Status
 
-Refreshes saved PR or issue status for linked workspace folders and fetches the
-configured base branch without changing checked out files.
+Refreshes saved PR or issue status for linked top-level workspace folders and
+linked nested repositories. It also fetches the configured base branch without
+changing checked out files.
 
 ## Picker State
 
-The workspace-folder picker uses the current `.code-workspace` file as the
-source of truth for saved PR and issue links. Folders without saved
-`workspaceActions` metadata are treated as unlinked.
+The target picker uses the current `.code-workspace` file as the source of truth
+for top-level `workspaceActions` metadata and nested
+`workspaceActions.subFolders[].remote` metadata. Targets without saved remote
+metadata are treated as unlinked.
 
-It still inspects the filesystem and Git state for:
+It also discovers nested Git repositories from the filesystem and inspects
+filesystem and Git state for:
 - branch drift from the configured upstream
 - branch drift from the configured base branch
 - local Git changes
 - unsaved editors
 - workspace folders that are missing from disk
 
-The picker shows a single line per workspace folder.
+The picker shows one row for each top-level workspace folder and nested target.
+Nested targets are grouped directly below their parent and use indented
+relative-path labels.
 
 Marker meanings:
-- `$(cloud)` folder has a saved PR or issue link
+- `$(cloud)` target has a saved PR or issue link
+- `$(pass-filled)` a top-level linked worktree belongs to a merged PR or closed
+  issue
+- `$(circle-slash)` a top-level linked worktree belongs to a PR that closed
+  without being merged
+- `$(warning)` workspace folder entry is missing from disk
 - `$(cloud-download)` branch is behind its configured upstream
 - `$(git-pull-request-draft)` branch is behind the configured base branch
 - `$(diff-modified)` repository has Git changes
-- `$(primitive-dot)` workspace folder contains unsaved editors
+- `$(primitive-dot)` top-level folder contains unsaved editors, or a removable
+  worktree has uncommitted changes
 
 ## Notes
 
 - `Pull Remote Branch` updates the selected folder's current branch from its
   configured upstream.
-- `Pull Base Repository` updates the underlying base repository for a linked
+- `Pull Base Repository` updates the underlying base repository for a top-level
   Git worktree.
 - `Rebase onto Base Branch` fetches the configured base branch and rebases the
   selected folder onto the latest base ref.
-- Default folder picker mnemonics:
-  `A`, `S`, `D`, `F`, `G`, `H`, `J`, `K`, `L`, `;`, `Q`, `W`, `E`, `R`, `T`,
-  `Y`, `U`, `I`, `O`, `P`, `Z`, `X`, `C`, `V`, `B`, `N`, `M`, `,`, `.`
-- Default action picker mnemonics:
+- Default action-picker mnemonics:
   `T`, `C`, `O`, `L`, `P`, `B`, `M`, `R`, `D`

@@ -1240,9 +1240,9 @@ async function removeWorkspaceCleanupCandidates(
   );
   if (dirtyCandidates.length > 0) {
     await deps.showWarningMessage(
-      `Worktrees have uncommitted changes: ${dirtyCandidates
+      `Cannot remove worktrees with uncommitted changes: ${dirtyCandidates
         .map((candidate) => candidate.folderName)
-        .join(", ")}`,
+        .join(", ")}. Commit, stash, or discard the changes first.`,
     );
     return;
   }
@@ -1462,22 +1462,42 @@ function toRemovalConfirmationMessage(
   candidate: WorkspaceCleanupCandidate,
 ): string {
   if (candidate.kind === "missing") {
-    return `Remove missing workspace folder entry for ${candidate.folderName}?`;
+    return (
+      `Remove the missing workspace folder entry for ${candidate.folderName}? ` +
+      "No files will be deleted."
+    );
   }
 
   if (candidate.kind === "issue") {
-    return `Remove worktree for ${candidate.folderName} (closed issue #${candidate.issueNumber})?`;
+    return toWorktreeRemovalConfirmationMessage(
+      `Remove worktree for ${candidate.folderName} (closed issue #${candidate.issueNumber})`,
+    );
   }
 
   if (candidate.kind === "worktree") {
-    return `Remove worktree for ${candidate.folderName}?`;
+    return toWorktreeRemovalConfirmationMessage(
+      `Remove worktree for ${candidate.folderName}`,
+    );
   }
 
   if (candidate.kind === "folder") {
-    return `Remove ${candidate.folderName} from the workspace?`;
+    return (
+      `Remove ${candidate.folderName} from this workspace? ` +
+      "The folder and its files will remain on disk."
+    );
   }
 
-  return `Remove worktree for ${candidate.folderName} (${candidate.prState} PR #${candidate.prNumber})?`;
+  return toWorktreeRemovalConfirmationMessage(
+    `Remove worktree for ${candidate.folderName} (${candidate.prState} PR #${candidate.prNumber})`,
+  );
+}
+
+function toWorktreeRemovalConfirmationMessage(summary: string): string {
+  return (
+    `${summary}? The worktree directory and workspace entry will be removed. ` +
+    "If a local branch is checked out, Workspace Actions will try to delete " +
+    "it with git branch -d."
+  );
 }
 
 function toRemovalConfirmationMessageForCandidates(
@@ -1510,7 +1530,19 @@ function toRemovalConfirmationMessageForCandidates(
     );
   }
 
-  return `Remove ${parts.join(" and ")} from the workspace?`;
+  const prompt = `Remove ${parts.join(" and ")} from this workspace?`;
+  if (worktreeCount === 0) {
+    return `${prompt} No files will be deleted.`;
+  }
+
+  const regularFolderNotice = folderCount > 0
+    ? " Regular folders and their files will remain on disk."
+    : "";
+  return (
+    `${prompt} Worktree directories and workspace entries will be removed. ` +
+    "If local branches are checked out, Workspace Actions will try to delete " +
+    `them with git branch -d.${regularFolderNotice}`
+  );
 }
 
 function toCleanupSuccessMessage(

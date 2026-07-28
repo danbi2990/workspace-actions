@@ -4,6 +4,7 @@ node_modules/**
 src/**
 test/**
 scripts/**
+plan/**
 tsconfig.json
 tsconfig.build.json
 package-lock.json

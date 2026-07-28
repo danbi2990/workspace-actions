@@ -1357,7 +1357,9 @@ test("copyWorkspaceFolderPaths removes selected cleanup candidates through the a
   }));
 
   assert.deepEqual(confirmations, [
-    "Remove worktree for api (merged PR #42)?",
+    "Remove worktree for api (merged PR #42)? " +
+      "The worktree directory and workspace entry will be removed. " +
+      "If a local branch is checked out, Workspace Actions will try to delete it with git branch -d.",
   ]);
   assert.deepEqual(removed, ["/worktrees/api"]);
   assert.deepEqual(removedFromWorkspace, [
@@ -1400,7 +1402,9 @@ test("copyWorkspaceFolderPaths removes a regular worktree through the action pic
   }));
 
   assert.deepEqual(confirmations, [
-    "Remove worktree for feature-scratch?",
+    "Remove worktree for feature-scratch? " +
+      "The worktree directory and workspace entry will be removed. " +
+      "If a local branch is checked out, Workspace Actions will try to delete it with git branch -d.",
   ]);
   assert.deepEqual(removed, ["/worktrees/feature-scratch"]);
   assert.deepEqual(removedFromWorkspace, [
@@ -1443,7 +1447,7 @@ test("copyWorkspaceFolderPaths removes a regular folder from the workspace only"
   }));
 
   assert.deepEqual(confirmations, [
-    "Remove home from the workspace?",
+    "Remove home from this workspace? The folder and its files will remain on disk.",
   ]);
   assert.deepEqual(removed, []);
   assert.deepEqual(removedFromWorkspace, [
@@ -1483,7 +1487,9 @@ test("copyWorkspaceFolderPaths removes selected closed-issue cleanup candidates 
   }));
 
   assert.deepEqual(confirmations, [
-    "Remove worktree for piglet-issue-1687 (closed issue #1687)?",
+    "Remove worktree for piglet-issue-1687 (closed issue #1687)? " +
+      "The worktree directory and workspace entry will be removed. " +
+      "If a local branch is checked out, Workspace Actions will try to delete it with git branch -d.",
   ]);
   assert.deepEqual(removed, ["/worktrees/piglet-issue-1687"]);
 });
@@ -1571,7 +1577,7 @@ test("removeClosedOrMergedPrWorktrees removes missing workspace folders without 
     },
   ]);
   assert.deepEqual(confirmations, [
-    "Remove missing workspace folder entry for old-api?",
+    "Remove the missing workspace folder entry for old-api? No files will be deleted.",
   ]);
   assert.deepEqual(messages, [
     "Removed missing workspace folder: /worktrees/old-api",
@@ -1602,7 +1608,8 @@ test("removeClosedOrMergedPrWorktrees warns instead of removing dirty worktrees"
   });
 
   assert.deepEqual(warnings, [
-    "Worktrees have uncommitted changes: api",
+    "Cannot remove worktrees with uncommitted changes: api. " +
+      "Commit, stash, or discard the changes first.",
   ]);
   assert.deepEqual(removed, []);
 });

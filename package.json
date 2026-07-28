@@ -58,7 +58,7 @@
         "workspaceActions.baseBranch": {
           "type": "string",
           "default": "main",
-          "description": "Base branch name used to detect whether the current branch is behind."
+          "description": "Base branch used for behind-status checks, status refreshes, and rebase actions."
         },
         "workspaceActions.workspaceRoots": {
           "type": "array",
@@ -74,7 +74,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Root folders used when browsing and creating folders to add to the current workspace file."
+          "description": "Root folders used to browse or create workspace folders and to locate local repositories when creating worktrees from GitHub URLs."
         }
       }
     },

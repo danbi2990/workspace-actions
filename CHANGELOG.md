@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Clarify worktree removal prompts and documentation, including dirty-worktree
+  protection and the best-effort local branch deletion with `git branch -d`.
+- Bring the README in sync with nested repository discovery, current picker
+  shortcuts, action availability, and status markers.
+- Exclude historical implementation plans from packaged extensions.
+
 ## 0.0.10 - 2026-07-27
 
 - Set the window title of newly created workspaces to the workspace name.
@@ -29,6 +37,18 @@
   symlink escapes, missing saved subfolders, duplicate labels, and nested action
   visibility.
 
+## 0.0.7 - 2026-05-10
+
+- Fix activation of the bundled extension and add a regression test that loads
+  the compiled bundle with VS Code as its only external module.
+
+## 0.0.6 - 2026-05-10
+
+- Switch dependency management and extension packaging from npm to pnpm and
+  esbuild.
+- Add GitHub Actions CI to test and package the extension on pushes and pull
+  requests.
+
 ## 0.0.5 - 2026-05-05
 
 - Add `Workspace Actions: Create Workspace` to create and immediately open a
@@ -46,6 +66,16 @@
 - Add focused tests for the concurrency queue, including worker limits, result
   ordering, and failure capture.
 
-## 0.0.3 - 2026-04-28
+## 0.0.3 - 2026-04-27
 
-- Publish the initial Marketplace-ready Workspace Actions extension.
+- Broaden the Marketplace description to cover multi-root workspaces, local Git
+  worktrees, and GitHub-linked folders.
+
+## 0.0.2 - 2026-04-24
+
+- Add a Marketplace icon and document the required Git and GitHub CLI setup.
+
+## 0.0.1 - 2026-04-23
+
+- Publish the initial Marketplace-ready Workspace Actions extension with
+  production packaging and public publisher and repository metadata.
